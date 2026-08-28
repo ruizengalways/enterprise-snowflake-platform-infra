@@ -5,8 +5,8 @@ terraform {
       version = ">= 2.19.0, < 3.0.0"
 
       configuration_aliases = [
-        snowflake.securityadmin,
-        snowflake.sysadmin,
+        snowflake.objects,
+        snowflake.security,
       ]
     }
   }
