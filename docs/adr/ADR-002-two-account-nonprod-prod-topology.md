@@ -1,17 +1,13 @@
 # ADR-002 — Two-account NONPROD / PROD topology
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-018
 - **Date:** 2026-08-28
 
 ## Context
 
-The platform needs personal development, shared development, ephemeral PR CI, UAT, and production while keeping production blast radius and administrative trust separate from day-to-day engineering.
+The platform originally selected a two-account `NONPROD` / `PROD` topology to isolate production while keeping development, CI and UAT administratively simple.
 
-Creating a Snowflake account per lifecycle stage would increase administration and cross-account complexity. Putting all lifecycle stages in one account would weaken the production isolation goal.
-
-## Decision
-
-Use two Snowflake accounts:
+## Original decision
 
 ```text
 NONPROD
@@ -25,16 +21,13 @@ PROD
 └── PLATFORM_CONTROL
 ```
 
-The same project Git history and immutable SHA moves through environments; accounts/databases are deployment targets, not code branches.
+## Why superseded
 
-Stable project schemas inside shared analytics databases are project-qualified per ADR-016.
+Further design work identified two stronger requirements:
 
-`PLATFORM_CONTROL` exists independently in each account so runtime control state does not create a cross-account availability dependency.
+1. UAT should exercise account-level security, integrations, parameters and deployment behaviour in a production-like isolation boundary rather than sharing the DEV account.
+2. Analytics databases should align with data-product ownership and cost/storage attribution rather than placing all projects in one environment-wide analytics database.
 
-## Consequences
+ADR-018 replaces the account topology with `DEV`, `UAT`, and `PROD` accounts. ADR-019 replaces shared environment-wide analytics databases with environment-by-data-product databases.
 
-- Production has a clear account/security boundary.
-- NONPROD can host personal DEV, PR CI and UAT without creating an account per stage.
-- Environment configuration must resolve physical database/account targets.
-- PROD deployment identity and state must be separately controlled.
-- Cross-account observability rollups are optional aggregation, not a runtime prerequisite.
+This file remains in the history to preserve the evolution of the architecture rather than rewriting the earlier decision as if it never existed.
