@@ -8,7 +8,7 @@ module "analytics_environment" {
   for_each = local.config.analytics_databases
 
   providers = {
-    snowflake = snowflake.sysadmin
+    snowflake = snowflake.objects
   }
 
   database_name           = each.value.name
@@ -24,7 +24,7 @@ module "warehouse" {
   for_each = local.config.warehouses
 
   providers = {
-    snowflake = snowflake.sysadmin
+    snowflake = snowflake.objects
   }
 
   name                      = each.value.name
@@ -38,7 +38,7 @@ module "platform_control" {
   source = "../../modules/platform-control"
 
   providers = {
-    snowflake = snowflake.sysadmin
+    snowflake = snowflake.objects
   }
 
   database_name  = local.config.platform_control.name
@@ -50,8 +50,8 @@ module "rbac" {
   source = "../../modules/rbac"
 
   providers = {
-    snowflake.securityadmin = snowflake.securityadmin
-    snowflake.sysadmin      = snowflake.sysadmin
+    snowflake.securityadmin = snowflake.security
+    snowflake.sysadmin      = snowflake.objects
   }
 
   project_codes = local.project_codes
