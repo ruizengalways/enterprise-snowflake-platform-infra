@@ -4,44 +4,36 @@ Central platform-engineering repository for the Enterprise Snowflake reference p
 
 ## Canonical architecture
 
-The long-term project memory and authoritative architecture document is:
-
 - [`docs/PROJECT_BLUEPRINT.md`](docs/PROJECT_BLUEPRINT.md)
-
-Supporting architecture:
-
 - [`docs/architecture/REPOSITORY_LAYOUT.md`](docs/architecture/REPOSITORY_LAYOUT.md)
 - [`docs/architecture/ACCOUNT_TOPOLOGY.md`](docs/architecture/ACCOUNT_TOPOLOGY.md)
 - [`docs/architecture/RBAC_MODEL.md`](docs/architecture/RBAC_MODEL.md)
 - [`docs/standards/NAMING_CONVENTIONS.md`](docs/standards/NAMING_CONVENTIONS.md)
 - [`docs/standards/TERRAFORM_STANDARDS.md`](docs/standards/TERRAFORM_STANDARDS.md)
 
-Architecture decisions are recorded under `docs/adr/`.
+Architecture decisions are under `docs/adr/`.
 
 ## This repository owns
 
-- Snowflake organisation/account foundation
-- NONPROD / PROD platform topology
+- Snowflake organization/account foundation and bootstrap architecture
+- DEV / UAT / PROD account topology
+- project/domain analytics databases and stable structural schemas
 - central RBAC and database-role design
-- reusable Terraform project bootstrap infrastructure
-- workload identities / OIDC and integrations
-- shared governance
-- central cost controls
+- warehouses and cost-control foundations
+- workload identities / OIDC integrations
 - `PLATFORM_CONTROL` structural/operational foundation
-- central observability and recovery architecture
-- platform-level standards, ADRs and runbooks
+- governance, observability and recovery platform architecture
 
 ## This repository does not own
 
 - Health or Transport business transformations
 - project-specific dbt models
-- generic reusable dbt framework logic that belongs in `enterprise-snowflake-data-project-framework`
+- reusable dbt framework logic owned by `enterprise-snowflake-data-project-framework`
 - source-system simulation
+- human employee lifecycle records that should come from enterprise identity/SSO/SCIM
 - Metric Guard
 
 ## Terraform foundation
-
-Current Terraform code lives under [`terraform/`](terraform/):
 
 ```text
 terraform/
@@ -51,25 +43,29 @@ terraform/
 │   ├── platform-control/
 │   └── rbac/
 └── stacks/
-    ├── nonprod/
+    ├── dev/
+    ├── uat/
     └── prod/
 ```
 
-Environment object metadata is in:
+Environment metadata:
 
 ```text
-config/environments/nonprod.yml
+config/environments/dev.yml
+config/environments/uat.yml
 config/environments/prod.yml
 ```
 
-The code is intentionally credential-free in source control. Automated shared apply remains disabled until durable remote Terraform state and GitHub-to-Snowflake workload identity federation are implemented.
+Database boundary is environment × data product, for example `DEV_HEALTH`, `CI_HEALTH`, `UAT_TRANSPORT`, and `PROD_TRANSPORT`. Physical source systems do not each receive a database merely for cost attribution.
+
+The code is credential-free in source control. Automated shared apply remains disabled until durable remote state and GitHub-to-Snowflake workload identity federation are implemented.
 
 ## Current phase
 
 **Phase 1 — Platform Foundation is in progress.**
 
-Completed in code: Terraform/provider version pinning, NONPROD/PROD environment metadata, database/schema/warehouse modules, structural `PLATFORM_CONTROL`, capability/database RBAC, NONPROD/PROD root stacks, and validation-only GitHub Actions CI.
+Completed in code: version pinning, three-account environment metadata, project database/schema modules, warehouse guardrails, structural `PLATFORM_CONTROL`, project-aware RBAC, DEV/UAT/PROD root stacks, and validation-only GitHub Actions CI.
 
-Still pending before Phase 1 exit: successful connected Terraform init/lock files, remote state, workload identity federation, reviewed NONPROD plan/apply, Snowflake-side verification, project/personal/PR schema bootstrap lifecycle, and cost-control hardening.
+Still pending before Phase 1 exit: provider lock files, remote state, workload identity federation, organization/account bootstrap execution, reviewed DEV plan/apply, Snowflake-side verification, personal/PR schema lifecycle and cost-control hardening.
 
 Kafka, Snowpipe Streaming, Openflow and broad dbt modelling remain intentionally deferred.
