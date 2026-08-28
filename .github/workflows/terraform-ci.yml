@@ -3,7 +3,7 @@ name: Terraform CI
 on:
   pull_request:
     paths:
-      - ".github/workflows/terraform-ci.yml"
+      - ".github/workflows/terraform-*.yml"
       - ".terraform-version"
       - "config/organization.yml"
       - "config/environments/**"
@@ -12,7 +12,7 @@ on:
     branches:
       - main
     paths:
-      - ".github/workflows/terraform-ci.yml"
+      - ".github/workflows/terraform-*.yml"
       - ".terraform-version"
       - "config/organization.yml"
       - "config/environments/**"
