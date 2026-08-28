@@ -8,13 +8,13 @@ The long-term project memory and authoritative architecture document is:
 
 - [`docs/PROJECT_BLUEPRINT.md`](docs/PROJECT_BLUEPRINT.md)
 
-The detailed target directory layout across all five repositories is:
+Supporting architecture:
 
 - [`docs/architecture/REPOSITORY_LAYOUT.md`](docs/architecture/REPOSITORY_LAYOUT.md)
-
-Snowflake naming rules are in:
-
+- [`docs/architecture/ACCOUNT_TOPOLOGY.md`](docs/architecture/ACCOUNT_TOPOLOGY.md)
+- [`docs/architecture/RBAC_MODEL.md`](docs/architecture/RBAC_MODEL.md)
 - [`docs/standards/NAMING_CONVENTIONS.md`](docs/standards/NAMING_CONVENTIONS.md)
+- [`docs/standards/TERRAFORM_STANDARDS.md`](docs/standards/TERRAFORM_STANDARDS.md)
 
 Architecture decisions are recorded under `docs/adr/`.
 
@@ -39,6 +39,37 @@ Architecture decisions are recorded under `docs/adr/`.
 - source-system simulation
 - Metric Guard
 
+## Terraform foundation
+
+Current Terraform code lives under [`terraform/`](terraform/):
+
+```text
+terraform/
+├── modules/
+│   ├── analytics-environment/
+│   ├── warehouse/
+│   ├── platform-control/
+│   └── rbac/
+└── stacks/
+    ├── nonprod/
+    └── prod/
+```
+
+Environment object metadata is in:
+
+```text
+config/environments/nonprod.yml
+config/environments/prod.yml
+```
+
+The code is intentionally credential-free in source control. Automated shared apply remains disabled until durable remote Terraform state and GitHub-to-Snowflake workload identity federation are implemented.
+
 ## Current phase
 
-Phase 0 is complete. Repository layout is planned before implementation. The next implementation step is the smallest useful Phase 1 NONPROD Terraform foundation; Kafka, Snowpipe Streaming, Openflow and broad dbt modelling remain intentionally deferred.
+**Phase 1 — Platform Foundation is in progress.**
+
+Completed in code: Terraform/provider version pinning, NONPROD/PROD environment metadata, database/schema/warehouse modules, structural `PLATFORM_CONTROL`, capability/database RBAC, NONPROD/PROD root stacks, and validation-only GitHub Actions CI.
+
+Still pending before Phase 1 exit: successful connected Terraform init/lock files, remote state, workload identity federation, reviewed NONPROD plan/apply, Snowflake-side verification, project/personal/PR schema bootstrap lifecycle, and cost-control hardening.
+
+Kafka, Snowpipe Streaming, Openflow and broad dbt modelling remain intentionally deferred.
