@@ -1,0 +1,82 @@
+environment: dev
+account:
+  logical_name: DEV
+
+projects:
+  health:
+    code: HEALTH
+    repository: enterprise-snowflake-health-analytics
+  transport:
+    code: TRANSPORT
+    repository: enterprise-snowflake-transport-analytics
+
+# Database boundary is environment x data product. CI stays in the DEV account
+# but uses separate project databases so ephemeral PR work cannot collide with DEV.
+analytics_databases:
+  health_dev:
+    name: DEV_HEALTH
+    project_code: HEALTH
+    retention_days: 1
+    schemas:
+      - STAGING
+      - INTERMEDIATE
+      - CANONICAL
+      - MARTS
+      - SEMANTIC
+  health_ci:
+    name: CI_HEALTH
+    project_code: HEALTH
+    retention_days: 1
+    # PR schemas are created/removed by delivery workflows, not Terraform state.
+    schemas: []
+  transport_dev:
+    name: DEV_TRANSPORT
+    project_code: TRANSPORT
+    retention_days: 1
+    schemas:
+      - STAGING
+      - INTERMEDIATE
+      - CANONICAL
+      - MARTS
+      - SEMANTIC
+  transport_ci:
+    name: CI_TRANSPORT
+    project_code: TRANSPORT
+    retention_days: 1
+    schemas: []
+
+platform_control:
+  name: PLATFORM_CONTROL
+  retention_days: 1
+  schemas:
+    - DEPLOYMENT
+    - QUALITY
+    - OBSERVABILITY
+    - OPERATIONS
+
+warehouses:
+  health_dev:
+    name: WH_HEALTH_DEV
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
+  health_ci:
+    name: WH_HEALTH_CI
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 1800
+  transport_dev:
+    name: WH_TRANSPORT_DEV
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
+  transport_ci:
+    name: WH_TRANSPORT_CI
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 1800
+  platform_ops:
+    name: WH_PLATFORM_OPS
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
