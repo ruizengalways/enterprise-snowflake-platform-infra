@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 1 executable baseline. The platform now targets three Snowflake accounts: DEV, UAT and PROD. Account-level Terraform apply remains gated on remote state and workload authentication.
+Phase 1 executable baseline. The platform targets three Snowflake accounts: DEV, UAT and PROD. A separate Organization Terraform root now defines account creation, while routine account-level apply remains gated on remote state and workload authentication.
 
 ## Organisation topology
 
@@ -27,7 +27,19 @@ Snowflake Organization
     └── PLATFORM_CONTROL
 ```
 
-Account isolation is used for lifecycle/security boundaries. Database isolation is used for environment × data-product ownership, storage/recovery boundaries and clearer cost attribution.
+Account isolation is the lifecycle/security boundary. Database isolation is environment × data-product/domain ownership plus storage/recovery boundary. Warehouse isolation is domain × workload compute/cost boundary.
+
+## Organization bootstrap
+
+```text
+terraform/stacks/organization/
+```
+
+is the only Terraform root using `ORGADMIN`. It manages DEV/UAT/PROD account resources from `config/organization.yml`.
+
+Account creation uses a bootstrap-only SERVICE administrator with RSA public-key input supplied outside Git. Account resources have `prevent_destroy = true`. DEV/UAT/PROD routine roots do not use ORGADMIN.
+
+See ADR-021.
 
 ## Why CI stays in DEV
 
@@ -35,11 +47,33 @@ CI is ephemeral and repository-driven. A fourth CI account would add account-lev
 
 CI therefore shares the DEV account while remaining isolated through:
 
-- `CI_<PROJECT>` databases;
+- `CI_<DOMAIN>` databases;
 - PR-specific schemas;
-- dedicated CI warehouses;
-- later dedicated machine identities;
+- dedicated `WH_<DOMAIN>_CI` warehouses;
+- later dedicated CI workload identities;
 - explicit cleanup lifecycle.
+
+## Domain access model
+
+Each domain has independent roles:
+
+```text
+AR_<DOMAIN>_GUEST
+  -> AR_<DOMAIN>_READER
+  -> AR_<DOMAIN>_DEVELOPER
+  -> AR_<DOMAIN>_ADMIN
+```
+
+`GUEST` is authenticated read-only consumer access and initially sees only:
+
+```text
+MARTS
+SEMANTIC
+```
+
+`READER` sees all stable domain layers. Health roles never imply Transport access and vice versa.
+
+See ADR-020 and `RBAC_MODEL.md`.
 
 ## DEV account
 
@@ -50,7 +84,7 @@ DEV_HEALTH
 DEV_TRANSPORT
 ```
 
-Each uses stable transformation schemas:
+Stable transformation schemas:
 
 ```text
 STAGING
@@ -74,19 +108,30 @@ CI_HEALTH
 CI_TRANSPORT
 ```
 
-Terraform creates the databases but not the ephemeral PR schemas. Future delivery workflows create/remove names such as `PR_123_STAGING` inside the owning project's CI database.
+Terraform creates the CI databases but not ephemeral PR schemas. Delivery workflows later create/remove names such as `PR_123_STAGING`.
 
-DEV warehouses:
+DEV domain warehouses:
 
 ```text
-WH_HEALTH_DEV
+WH_HEALTH_QUERY
+WH_HEALTH_TRANSFORM
 WH_HEALTH_CI
-WH_TRANSPORT_DEV
+WH_TRANSPORT_QUERY
+WH_TRANSPORT_TRANSFORM
 WH_TRANSPORT_CI
 WH_PLATFORM_OPS
 ```
 
-CI warehouses are reserved for later machine identities rather than broad human access.
+Access intent:
+
+```text
+AR_HEALTH_GUEST        -> WH_HEALTH_QUERY
+AR_HEALTH_DEVELOPER    -> WH_HEALTH_TRANSFORM
+AR_TRANSPORT_GUEST     -> WH_TRANSPORT_QUERY
+AR_TRANSPORT_DEVELOPER -> WH_TRANSPORT_TRANSFORM
+```
+
+READER inherits GUEST query access. CI warehouses are reserved for later machine identities.
 
 ## UAT account
 
@@ -97,17 +142,19 @@ UAT_HEALTH
 UAT_TRANSPORT
 ```
 
-UAT is intentionally a separate account so promotion can validate account-scoped RBAC, identities, integrations, parameters and operational configuration before production.
-
-Human developers are read-only by default in UAT; project admins retain the governed owner tier. Deployment will use a separate machine identity.
+UAT is a separate production-like account so account-scoped RBAC, identity, integrations, parameters and operational configuration can be tested before PROD.
 
 Warehouses:
 
 ```text
-WH_HEALTH_UAT
-WH_TRANSPORT_UAT
+WH_HEALTH_QUERY
+WH_HEALTH_TRANSFORM
+WH_TRANSPORT_QUERY
+WH_TRANSPORT_TRANSFORM
 WH_PLATFORM_OPS
 ```
+
+Human developers are read-only by default. GUEST receives query compute; domain ADMIN currently receives transform compute until deployment workload identity is implemented.
 
 ## PROD account
 
@@ -118,21 +165,21 @@ PROD_HEALTH
 PROD_TRANSPORT
 ```
 
-PROD warehouses:
+Warehouses:
 
 ```text
-WH_HEALTH_TRANSFORM
 WH_HEALTH_QUERY
-WH_TRANSPORT_TRANSFORM
+WH_HEALTH_TRANSFORM
 WH_TRANSPORT_QUERY
+WH_TRANSPORT_TRANSFORM
 WH_PLATFORM_OPS
 ```
 
-Transform and query compute are separated in PROD so deployment/runtime compute and consumer query compute can be controlled and attributed independently.
+Query and transform compute are deliberately separated for workload isolation, cost attribution and operational control. Human developers remain read-only by default.
 
 ## Database boundary and many physical sources
 
-A project may ingest many MSSQL, MySQL, API, file or streaming sources without creating one database per source.
+A domain may ingest many MSSQL, MySQL, API, file or streaming sources without creating one database per source.
 
 Example:
 
@@ -148,7 +195,7 @@ PROD_HEALTH
 └── SEMANTIC
 ```
 
-The project database is the ownership/storage/recovery boundary. Source-level cost attribution additionally uses warehouses, query tags and Snowflake usage/storage metadata. See ADR-019.
+The domain database is the ownership/storage/recovery boundary. Source-level cost attribution additionally uses warehouses, query tags and Snowflake usage/storage metadata.
 
 ## `PLATFORM_CONTROL`
 
@@ -165,32 +212,34 @@ Account-local operational state avoids making DEV/UAT/PROD availability depend o
 
 ## Retention baseline
 
-Initial configuration uses one day of Time Travel retention for portability across Snowflake editions. Higher retention is a deliberate environment/project setting after recovery objectives, edition and storage cost are known.
+Analytics/control databases initially use one day of Time Travel retention for portability and cost control. Organization account deletion grace is separately configured: DEV/UAT currently 7 days and PROD 30 days.
 
 ## Ownership
 
-- Organization bootstrap owns creation of DEV/UAT/PROD accounts and requires narrowly controlled organization-level privilege.
-- Account Terraform stacks own databases, stable schemas, warehouses, structural `PLATFORM_CONTROL`, account roles, database roles and grants.
+- Organization bootstrap owns DEV/UAT/PROD account resources and uses isolated ORGADMIN authority.
+- Account Terraform stacks own domain databases, stable schemas, domain warehouses, structural `PLATFORM_CONTROL`, account roles, database roles and grants.
 - Personal DEV and PR CI schema lifecycle is not long-lived Terraform state.
-- dbt owns transformation relations inside project databases in later phases.
-- Human user lifecycle is expected to come from enterprise identity/SSO/SCIM rather than employee records in Terraform.
+- dbt owns transformation relations inside domain databases in later phases.
+- Human user lifecycle comes from enterprise identity/SSO/SCIM rather than employee records in Terraform.
 
 ## Terraform stacks
 
 ```text
+terraform/stacks/organization/
 terraform/stacks/dev/
 terraform/stacks/uat/
 terraform/stacks/prod/
 ```
 
-Each account eventually receives an independent remote-state and workload-identity boundary.
+Each root requires an independent remote-state boundary. Organization bootstrap is privileged and infrequent; DEV/UAT/PROD become routine WIF-authenticated roots.
 
 ## Apply gate
 
 Do not automate shared apply until:
 
-1. durable remote Terraform state is selected and documented;
-2. workload identity federation is configured;
-3. target account identifiers/trust are tested;
-4. a reviewed DEV plan is produced first;
-5. DEV is verified before enabling UAT, then PROD.
+1. durable remote Terraform state is selected and documented for all four roots;
+2. bootstrap admin inputs are handled through a controlled secret process;
+3. workload identity federation is configured for routine account stacks;
+4. target account identifiers/trust are tested;
+5. a reviewed DEV plan is produced first;
+6. DEV is verified before enabling UAT, then PROD.
