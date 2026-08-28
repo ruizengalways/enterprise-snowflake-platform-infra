@@ -3,18 +3,18 @@ variable "project_codes" {
   type        = set(string)
 }
 
-variable "database_names" {
-  description = "Analytics databases in the current Snowflake account."
-  type        = set(string)
+variable "database_projects" {
+  description = "Mapping of analytics database name to the single owning data-product/project code."
+  type        = map(string)
 }
 
 variable "stable_schemas_by_database" {
-  description = "Stable project schemas by analytics database. Personal and PR schemas are intentionally excluded."
+  description = "Stable schemas by analytics database. Personal and PR schemas are intentionally excluded."
   type        = map(set(string))
 }
 
 variable "grant_developer_write" {
-  description = "Whether project developer account roles receive the WRITE database role. True in NONPROD and false in PROD."
+  description = "Whether project developer account roles receive the WRITE database role in this account. True in DEV; false in UAT/PROD."
   type        = bool
 }
 
