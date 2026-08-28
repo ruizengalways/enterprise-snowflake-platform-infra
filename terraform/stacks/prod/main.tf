@@ -66,15 +66,20 @@ module "rbac" {
     environment.database_name => toset(local.config.analytics_databases[key].schemas)
   }
 
-  # PROD developers remain read-only. Project admins receive OWNER database
-  # roles and transform warehouse access; machine deployment identity is separate.
+  published_schemas_by_database = {
+    for key, environment in module.analytics_environment :
+    environment.database_name => toset(local.config.analytics_databases[key].published_schemas)
+  }
+
+  # PROD developers remain read-only. Domain admins retain transform warehouse
+  # access until a dedicated deployment machine identity is implemented.
   grant_developer_write = false
 
   warehouse_grants = {
-    AR_HEALTH_READER      = toset([module.warehouse["health_query"].fully_qualified_name])
-    AR_HEALTH_ADMIN       = toset([module.warehouse["health_transform"].fully_qualified_name])
-    AR_TRANSPORT_READER   = toset([module.warehouse["transport_query"].fully_qualified_name])
-    AR_TRANSPORT_ADMIN    = toset([module.warehouse["transport_transform"].fully_qualified_name])
-    AR_PLATFORM_ENGINEER  = toset([module.warehouse["platform_ops"].fully_qualified_name])
+    AR_HEALTH_GUEST      = toset([module.warehouse["health_query"].fully_qualified_name])
+    AR_HEALTH_ADMIN      = toset([module.warehouse["health_transform"].fully_qualified_name])
+    AR_TRANSPORT_GUEST   = toset([module.warehouse["transport_query"].fully_qualified_name])
+    AR_TRANSPORT_ADMIN   = toset([module.warehouse["transport_transform"].fully_qualified_name])
+    AR_PLATFORM_ENGINEER = toset([module.warehouse["platform_ops"].fully_qualified_name])
   }
 }
