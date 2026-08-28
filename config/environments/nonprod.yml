@@ -1,0 +1,92 @@
+environment: nonprod
+account:
+  logical_name: NONPROD
+
+projects:
+  health:
+    code: HEALTH
+    repository: enterprise-snowflake-health-analytics
+  transport:
+    code: TRANSPORT
+    repository: enterprise-snowflake-transport-analytics
+
+analytics_databases:
+  dev:
+    name: ANALYTICS_DEV
+    retention_days: 1
+    schemas:
+      - HEALTH_STAGING
+      - HEALTH_INTERMEDIATE
+      - HEALTH_CANONICAL
+      - HEALTH_MARTS
+      - HEALTH_SEMANTIC
+      - TRANSPORT_STAGING
+      - TRANSPORT_INTERMEDIATE
+      - TRANSPORT_CANONICAL
+      - TRANSPORT_MARTS
+      - TRANSPORT_SEMANTIC
+  ci:
+    name: ANALYTICS_CI
+    retention_days: 1
+    # PR schemas are created and removed by the delivery workflow, not Terraform.
+    schemas: []
+  uat:
+    name: ANALYTICS_UAT
+    retention_days: 1
+    schemas:
+      - HEALTH_STAGING
+      - HEALTH_INTERMEDIATE
+      - HEALTH_CANONICAL
+      - HEALTH_MARTS
+      - HEALTH_SEMANTIC
+      - TRANSPORT_STAGING
+      - TRANSPORT_INTERMEDIATE
+      - TRANSPORT_CANONICAL
+      - TRANSPORT_MARTS
+      - TRANSPORT_SEMANTIC
+
+platform_control:
+  name: PLATFORM_CONTROL
+  retention_days: 1
+  schemas:
+    - DEPLOYMENT
+    - QUALITY
+    - OBSERVABILITY
+    - OPERATIONS
+
+warehouses:
+  health_dev:
+    name: WH_HEALTH_DEV
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
+  health_ci:
+    name: WH_HEALTH_CI
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 1800
+  health_uat:
+    name: WH_HEALTH_UAT
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
+  transport_dev:
+    name: WH_TRANSPORT_DEV
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
+  transport_ci:
+    name: WH_TRANSPORT_CI
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 1800
+  transport_uat:
+    name: WH_TRANSPORT_UAT
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
+  platform_ops:
+    name: WH_PLATFORM_OPS
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
