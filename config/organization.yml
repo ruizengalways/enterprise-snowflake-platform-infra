@@ -1,0 +1,19 @@
+# Organization-level account contract. This file contains no credentials.
+# Region is intentionally omitted: Snowflake creates accounts in the same region
+# as the ORGADMIN bootstrap account unless a future deployment needs otherwise.
+accounts:
+  dev:
+    name: DEV
+    edition: ENTERPRISE
+    grace_period_days: 7
+    is_org_admin: false
+  uat:
+    name: UAT
+    edition: ENTERPRISE
+    grace_period_days: 7
+    is_org_admin: false
+  prod:
+    name: PROD
+    edition: ENTERPRISE
+    grace_period_days: 30
+    is_org_admin: false
