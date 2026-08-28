@@ -1,6 +1,9 @@
 # Terraform working directories
 **/.terraform/*
 
+# Runtime-selected Terraform backend declaration.
+**/backend.generated.tf
+
 # Terraform state
 *.tfstate
 *.tfstate.*
@@ -23,7 +26,7 @@ tfplan
 override.tf
 override.tf.json
 *_override.tf
-*_override.tf.json
+override.tf.json
 
 # Snowflake local config / keys
 .snowflake/
