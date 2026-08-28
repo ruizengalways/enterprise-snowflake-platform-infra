@@ -23,36 +23,40 @@ locals {
 
   account_roles = merge(local.platform_roles, local.project_roles)
 
+  # Each analytics database has one owning data product. This deliberately avoids
+  # creating HEALTH database roles in TRANSPORT databases (and vice versa).
   database_project_pairs = {
-    for pair in setproduct(var.database_names, var.project_codes) :
-    "${pair[0]}|${pair[1]}" => {
-      database = pair[0]
-      project  = pair[1]
+    for database_name, project_code in var.database_projects :
+    database_name => {
+      database = database_name
+      project  = project_code
     }
   }
 
   database_roles = {
-    for triple in setproduct(var.database_names, var.project_codes, local.database_access) :
-    "${triple[0]}|${triple[1]}|${triple[2]}" => {
-      database = triple[0]
-      project  = triple[1]
-      access   = triple[2]
-      name     = "DR_${triple[1]}_ANALYTICS_${triple[2]}"
-    }
+    for item in flatten([
+      for database_name, project_code in var.database_projects : [
+        for access in local.database_access : {
+          key      = "${database_name}|${project_code}|${access}"
+          database = database_name
+          project  = project_code
+          access   = access
+          name     = "DR_${project_code}_ANALYTICS_${access}"
+        }
+      ]
+    ]) : item.key => item
   }
 
   schema_entries = {
     for item in flatten([
       for database_name, schemas in var.stable_schemas_by_database : [
-        for project_code in var.project_codes : [
-          for schema_name in schemas : {
-            key        = "${database_name}|${project_code}|${schema_name}"
-            database   = database_name
-            project    = project_code
-            schema     = schema_name
-            schema_fqn = "\"${database_name}\".\"${schema_name}\""
-          } if startswith(schema_name, "${project_code}_")
-        ]
+        for schema_name in schemas : {
+          key        = "${database_name}|${schema_name}"
+          database   = database_name
+          project    = var.database_projects[database_name]
+          schema     = schema_name
+          schema_fqn = "\"${database_name}\".\"${schema_name}\""
+        }
       ]
     ]) : item.key => item
   }
@@ -86,7 +90,6 @@ resource "snowflake_account_role" "this" {
   comment = "Capability role for ${each.value.scope} ${each.value.capability}; managed by enterprise-snowflake-platform-infra."
 }
 
-# Capability inheritance: READER -> ENGINEER -> ADMIN for platform roles.
 resource "snowflake_grant_account_role" "platform_reader_to_engineer" {
   provider = snowflake.securityadmin
 
@@ -101,7 +104,6 @@ resource "snowflake_grant_account_role" "platform_engineer_to_admin" {
   parent_role_name = snowflake_account_role.this["PLATFORM|ADMIN"].name
 }
 
-# Capability inheritance: READER -> DEVELOPER -> ADMIN within each project.
 resource "snowflake_grant_account_role" "project_reader_to_developer" {
   provider = snowflake.securityadmin
   for_each = var.project_codes
@@ -119,7 +121,7 @@ resource "snowflake_grant_account_role" "project_developer_to_admin" {
 }
 
 # Keep custom roles reachable from the Snowflake system-role hierarchy without
-# making AR_PLATFORM_ADMIN automatically inherit every project role.
+# making platform administration imply project administration.
 resource "snowflake_grant_account_role" "platform_admin_to_sysadmin" {
   provider = snowflake.securityadmin
 
@@ -144,7 +146,6 @@ resource "snowflake_database_role" "project" {
   comment  = "${each.value.project} analytics ${each.value.access} access; managed by enterprise-snowflake-platform-infra."
 }
 
-# Database-role inheritance: READ -> WRITE -> OWNER.
 resource "snowflake_grant_database_role" "read_to_write" {
   provider = snowflake.securityadmin
   for_each = local.database_project_pairs
@@ -185,7 +186,6 @@ resource "snowflake_grant_database_role" "owner_to_project_admin" {
   parent_role_name   = snowflake_account_role.this["${each.value.project}|ADMIN"].name
 }
 
-# READ database roles can resolve the database and project-owned stable schemas.
 resource "snowflake_grant_privileges_to_database_role" "read_database_usage" {
   provider = snowflake.sysadmin
   for_each = local.database_project_pairs
@@ -237,8 +237,7 @@ resource "snowflake_grant_privileges_to_database_role" "read_future_objects" {
   }
 }
 
-# WRITE adds the core schema-level DDL needed for normal dbt development.
-# Stream/task/procedure privileges are added only when their implementation phase requires them.
+# WRITE adds only the core schema-level DDL needed for ordinary dbt development.
 resource "snowflake_grant_privileges_to_database_role" "write_schema_ddl" {
   provider = snowflake.sysadmin
   for_each = local.schema_entries
@@ -258,8 +257,7 @@ resource "snowflake_grant_privileges_to_database_role" "write_schema_ddl" {
   }
 }
 
-# Warehouse access is deliberately expressed against account roles because
-# warehouses are account objects, not database-scoped objects.
+# Warehouses are account objects, so USAGE is granted to account roles.
 resource "snowflake_grant_privileges_to_account_role" "warehouse_usage" {
   provider = snowflake.securityadmin
   for_each = local.flattened_warehouse_grants
