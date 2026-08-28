@@ -33,6 +33,14 @@ locals {
     }
   }
 
+  # Human GUEST access exists only where at least one published schema is declared.
+  # CI databases intentionally publish no schemas, so domain guests receive no CI
+  # database role and not even database USAGE there.
+  guest_database_project_pairs = {
+    for database_name, pair in local.database_project_pairs : database_name => pair
+    if length(lookup(var.published_schemas_by_database, database_name, toset([]))) > 0
+  }
+
   database_roles = {
     for item in flatten([
       for database_name, project_code in var.database_projects : [
@@ -196,7 +204,7 @@ resource "snowflake_grant_database_role" "write_to_owner" {
 
 resource "snowflake_grant_database_role" "guest_to_project_guest" {
   provider = snowflake.securityadmin
-  for_each = local.database_project_pairs
+  for_each = local.guest_database_project_pairs
 
   database_role_name = snowflake_database_role.project["${each.value.database}|${each.value.project}|GUEST"].fully_qualified_name
   parent_role_name   = snowflake_account_role.this["${each.value.project}|GUEST"].name
@@ -226,10 +234,10 @@ resource "snowflake_grant_database_role" "owner_to_project_admin" {
   parent_role_name   = snowflake_account_role.this["${each.value.project}|ADMIN"].name
 }
 
-# GUEST can resolve the database and only the published schemas.
+# GUEST can resolve only databases that explicitly publish consumer schemas.
 resource "snowflake_grant_privileges_to_database_role" "guest_database_usage" {
   provider = snowflake.sysadmin
-  for_each = local.database_project_pairs
+  for_each = local.guest_database_project_pairs
 
   privileges         = ["USAGE"]
   database_role_name = snowflake_database_role.project["${each.value.database}|${each.value.project}|GUEST"].fully_qualified_name
