@@ -10,12 +10,13 @@
 
 1. Repository boundaries come before folder convenience.
 2. One concern has one authoritative location.
-3. Health/Transport repositories stay thin; shared technical behaviour belongs in the framework/platform.
+3. Health/Transport repositories stay thin; shared technical behaviour belongs in framework/platform repositories.
 4. Reusable GitHub workflows live under `.github/workflows/`.
-5. Terraform is split into reusable capability modules plus one root stack per Snowflake account.
-6. Snowflake-native SQL is separated by lifecycle purpose from dbt models.
-7. Configuration is non-secret metadata, never credentials.
-8. Planned folders are not created until implementation reaches them.
+5. Terraform is split into reusable capability modules plus isolated deployable roots.
+6. Organization-level Terraform is separate from routine account-level Terraform.
+7. Snowflake-native SQL is separated by lifecycle purpose from dbt models.
+8. Configuration is non-secret metadata, never credentials.
+9. Planned folders appear only when implementation reaches them.
 
 ## 2. `enterprise-snowflake-platform-infra`
 
@@ -43,12 +44,13 @@ enterprise-snowflake-platform-infra/
 │       └── ...                               # deployment/recovery/incidents later
 │
 ├── config/
+│   ├── organization.yml                     # DEV/UAT/PROD account contract
 │   ├── environments/
 │   │   ├── dev.yml
 │   │   ├── uat.yml
 │   │   └── prod.yml
 │   ├── projects/
-│   │   └── ...                               # when generic project onboarding begins
+│   │   └── ...                               # generic domain onboarding later
 │   ├── access-profiles/
 │   │   └── ...
 │   └── governance/
@@ -57,13 +59,19 @@ enterprise-snowflake-platform-infra/
 ├── terraform/
 │   ├── README.md
 │   ├── modules/
-│   │   ├── analytics-environment/           # project database + stable schemas
+│   │   ├── analytics-environment/           # one domain database + stable schemas
 │   │   ├── warehouse/                       # standard warehouse guardrails
-│   │   ├── rbac/                            # account/database roles + grants
+│   │   ├── rbac/                            # platform/domain roles + database roles + grants
 │   │   ├── platform-control/                # PLATFORM_CONTROL structure
 │   │   ├── workload-identity/               # later Phase 1
 │   │   └── cost-controls/                   # later Phase 1
 │   └── stacks/
+│       ├── organization/                    # ORGADMIN only; account creation/import
+│       │   ├── versions.tf
+│       │   ├── providers.tf
+│       │   ├── variables.tf
+│       │   ├── main.tf
+│       │   └── outputs.tf
 │       ├── dev/
 │       │   ├── versions.tf
 │       │   ├── providers.tf
@@ -101,12 +109,29 @@ enterprise-snowflake-platform-infra/
 
 ### Platform Infra rules
 
-- Organization-level creation of DEV/UAT/PROD is a separate privileged bootstrap lifecycle; normal account stacks assume the target account exists.
+- `organization/` is the only root allowed to use ORGADMIN; normal account stacks never create Snowflake accounts.
+- Organization/DEV/UAT/PROD eventually use independent remote state.
 - `terraform/` owns selected stable infrastructure state.
 - `snowflake/` owns selected native SQL objects when Terraform/dbt is not the clearer lifecycle owner.
 - `config/` provides non-secret declarative inputs.
-- Terraform state, real `.tfvars`, keys, passwords and tokens are never committed.
-- No separate top-level `observability/` folder unless a future asset type genuinely needs it; native monitoring SQL begins under `snowflake/monitoring/`.
+- Terraform state, real `.tfvars`, private keys, passwords and tokens are never committed.
+- No separate top-level `observability/` folder unless a future asset type genuinely requires it.
+
+### Current Phase 1 domain convention
+
+Each domain receives environment databases and workload compute rather than one database per physical source:
+
+```text
+DEV_HEALTH / UAT_HEALTH / PROD_HEALTH
+DEV_TRANSPORT / UAT_TRANSPORT / PROD_TRANSPORT
+
+WH_HEALTH_QUERY / WH_HEALTH_TRANSFORM
+WH_TRANSPORT_QUERY / WH_TRANSPORT_TRANSFORM
+```
+
+DEV additionally contains `CI_<DOMAIN>` databases and `WH_<DOMAIN>_CI` warehouses.
+
+RBAC is domain-specific and includes `GUEST -> READER -> DEVELOPER -> ADMIN`; GUEST is published-data read-only.
 
 ## 3. `enterprise-snowflake-data-project-framework`
 
@@ -144,7 +169,11 @@ enterprise-snowflake-data-project-framework/
     └── backfill.yml
 ```
 
-Framework rules: versioned dependency, no domain SQL, reusable workflows are callable via pinned tag/SHA, metadata validation stays technical rather than becoming a second orchestration language.
+Rules:
+
+- reusable workflows are versioned dependencies called from project repos;
+- framework code owns generic technical behaviour, never domain business SQL;
+- metadata validation must not become a second orchestration framework.
 
 ## 4. `enterprise-snowflake-demo-source-systems`
 
@@ -152,6 +181,7 @@ Framework rules: versioned dependency, no domain SQL, reusable workflows are cal
 enterprise-snowflake-demo-source-systems/
 ├── README.md
 ├── pyproject.toml
+├── .env.example
 ├── sources/{health,transport}/
 ├── adapters/{rest,sse,gtfs_realtime}/
 ├── sinks/{files,sql_server,snowflake_direct,snowpipe_streaming,kafka}/
@@ -160,7 +190,12 @@ enterprise-snowflake-demo-source-systems/
 └── tests/{unit,integration}/
 ```
 
-This repository represents the external world and stops at the source/RAW boundary. It contains no downstream marts/semantic/SCD2 business logic.
+Rules:
+
+- represents the world outside Snowflake;
+- source generators are independent of delivery technology;
+- stops at the source/RAW boundary;
+- no dbt, marts, semantic, downstream reconciliation or project SCD2 logic.
 
 ## 5. `enterprise-snowflake-health-analytics`
 
@@ -180,10 +215,14 @@ enterprise-snowflake-health-analytics/
 │   ├── tests/{singular,domain}/
 │   └── seeds/
 ├── ingestion/openflow/                      # Phase 8 only
-└── .github/workflows/{pr-ci,deploy-dev,promote-uat,promote-prod}.yml
+└── .github/workflows/
+    ├── pr-ci.yml
+    ├── deploy-dev.yml
+    ├── promote-uat.yml
+    └── promote-prod.yml
 ```
 
-Health owns source-specific RAW contracts/config and genuine Health SQL. Generic SCD2/reconciliation/freshness/recovery primitives remain framework capabilities.
+Health owns traditional batch/CDC/PII/SCD2/late-arrival/reconciliation/recovery domain behaviour. Generic mechanics remain in the framework.
 
 ## 6. `enterprise-snowflake-transport-analytics`
 
@@ -202,36 +241,57 @@ enterprise-snowflake-transport-analytics/
 │   ├── snapshots/
 │   ├── tests/{singular,domain}/
 │   └── seeds/
-├── ingestion/{snowpipe_streaming,kafka_connector}/
-└── .github/workflows/{pr-ci,deploy-dev,promote-uat,promote-prod}.yml
+├── ingestion/
+│   ├── snowpipe_streaming/
+│   └── kafka_connector/
+└── .github/workflows/
+    ├── pr-ci.yml
+    ├── deploy-dev.yml
+    ├── promote-uat.yml
+    └── promote-prod.yml
 ```
 
-Direct Snowpipe Streaming and Kafka Connector paths target the same logical RAW event contract; normally only one is active for a given run/environment.
+Direct Snowpipe Streaming and Kafka Connector paths target the same project-owned RAW event contract; normally one path is active.
 
 ## 7. Dependency direction
 
 ```text
-platform-infra ──provisions guardrails──> health / transport
-framework ──pinned package/workflows────> health / transport
-demo-source-systems ──external data─────> RAW contract ──> projects
+platform-infra
+    │ provisions guardrails/infrastructure
+    ▼
+health-analytics / transport-analytics
+    ▲
+    │ consume pinned framework releases
+    │
+data-project-framework
+
+source-systems
+    │ external-style data/events
+    ▼
+RAW contract -> project downstream
 ```
 
-Framework never imports project code; Platform Infra contains no Health/Transport business models; project repositories do not call one another.
+Rules:
+
+- framework never imports project code;
+- platform infra never owns Health/Transport business models;
+- source simulator never depends on downstream analytics;
+- projects consume pinned framework releases and do not call each other directly.
 
 ## 8. Intentionally deferred paths
 
-Do not create cosmetic placeholder implementations for Kafka, Snowpipe Streaming, Openflow, masking/RAP, rollback automation, recovery procedures, semantic regression, full reconciliation/observability, or account apply workflows before their phase starts.
+Do not create cosmetic placeholder content before the relevant phase for:
 
-## 9. Current Phase 1 structure
+- Kafka Connector;
+- direct Snowpipe Streaming;
+- Openflow;
+- masking/row-access policies;
+- workload identity implementation;
+- cost-control implementation;
+- production rollback automation;
+- recovery procedures;
+- semantic regression tooling;
+- full reconciliation engine;
+- full observability dashboards.
 
-Real Phase 1 paths now include:
-
-```text
-config/environments/{dev,uat,prod}.yml
-terraform/modules/{analytics-environment,warehouse,rbac,platform-control}/
-terraform/stacks/{dev,uat,prod}/
-.github/workflows/terraform-ci.yml
-docs/architecture/{ACCOUNT_TOPOLOGY,RBAC_MODEL,REPOSITORY_LAYOUT}.md
-```
-
-Next directory growth should be driven by remote state + workload identity + cost-control implementation, not placeholder architecture.
+The repository tree grows with working capabilities, not ahead of them.
