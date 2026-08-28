@@ -2,17 +2,19 @@
 
 ## Status
 
-Phase 1 executable baseline. Human/capability roles and project database roles are implemented in Terraform. Machine deployment identities remain the next workload-identity step.
+Phase 1 executable baseline. Domain-scoped human/capability roles, published-data guest access, database roles, and domain warehouse grants are implemented in Terraform. Machine deployment identities are intentionally deferred to the workload-identity step.
 
 ## Principles
 
-1. Account roles describe human/workload capability.
-2. Database roles describe object access inside one project database.
-3. Each analytics database maps to exactly one owning data product/project.
-4. Platform capability and project capability remain independent.
-5. `ACCOUNTADMIN` is not a normal CI/CD or platform-engineering role.
-6. Human developers have WRITE in DEV only; UAT/PROD developer roles are read-only by default.
-7. CI warehouse/database mutation belongs to a future machine identity.
+1. Account roles describe human/workload capability inside one Snowflake account.
+2. Database roles describe object access inside one domain database.
+3. Every analytics database belongs to exactly one governed domain/data product.
+4. Every domain receives independent role and compute boundaries.
+5. `GUEST` is authenticated read-only consumer access to published data, not Snowflake `PUBLIC` and not anonymous access.
+6. `ACCOUNTADMIN` is not a normal CI/CD or platform-engineering role.
+7. UAT/PROD human developers are read-only by default.
+8. CI compute belongs to future machine identities, not normal human developer roles.
+9. Terraform-managed stable schemas retain platform lifecycle ownership; domain data roles receive privileges rather than silently taking Terraform object ownership.
 
 ## Platform account roles
 
@@ -26,59 +28,92 @@ AR_PLATFORM_ADMIN
 SYSADMIN
 ```
 
-`AR_PLATFORM_ADMIN` does not imply Health/Transport project administration.
+The lower role inherits the capabilities above it. Platform authority does not imply Health or Transport authority.
 
-## Project account roles
+## Domain account roles
 
-For each project in each account:
+Every domain gets an independent hierarchy:
 
 ```text
-AR_<PROJECT>_READER
+AR_<DOMAIN>_GUEST
         ↓
-AR_<PROJECT>_DEVELOPER
+AR_<DOMAIN>_READER
         ↓
-AR_<PROJECT>_ADMIN
+AR_<DOMAIN>_DEVELOPER
+        ↓
+AR_<DOMAIN>_ADMIN
         ↓
 SYSADMIN
 ```
 
-Current scopes are `HEALTH` and `TRANSPORT`.
-
-## Database roles
-
-Each project database receives only its owning project's hierarchy:
+Current examples:
 
 ```text
-DR_<PROJECT>_ANALYTICS_READ
-        ↓
-DR_<PROJECT>_ANALYTICS_WRITE
-        ↓
-DR_<PROJECT>_ANALYTICS_OWNER
+AR_HEALTH_GUEST
+AR_HEALTH_READER
+AR_HEALTH_DEVELOPER
+AR_HEALTH_ADMIN
+
+AR_TRANSPORT_GUEST
+AR_TRANSPORT_READER
+AR_TRANSPORT_DEVELOPER
+AR_TRANSPORT_ADMIN
 ```
 
-Examples:
+A person can receive multiple independent domain roles. `AR_HEALTH_ADMIN` does not imply any Transport access.
+
+## Domain database roles
+
+Each domain database gets only its owning domain's hierarchy:
 
 ```text
+DR_<DOMAIN>_ANALYTICS_GUEST
+        ↓
+DR_<DOMAIN>_ANALYTICS_READ
+        ↓
+DR_<DOMAIN>_ANALYTICS_WRITE
+        ↓
+DR_<DOMAIN>_ANALYTICS_OWNER
+```
+
+Examples in `DEV_HEALTH`:
+
+```text
+DEV_HEALTH.DR_HEALTH_ANALYTICS_GUEST
 DEV_HEALTH.DR_HEALTH_ANALYTICS_READ
-UAT_HEALTH.DR_HEALTH_ANALYTICS_READ
-PROD_TRANSPORT.DR_TRANSPORT_ANALYTICS_OWNER
+DEV_HEALTH.DR_HEALTH_ANALYTICS_WRITE
+DEV_HEALTH.DR_HEALTH_ANALYTICS_OWNER
 ```
 
-`DEV_TRANSPORT` does **not** receive `DR_HEALTH_*` roles. Terraform consumes an explicit `database_projects` mapping instead of generating every project × database combination.
+`DEV_HEALTH` never receives Transport database roles. Terraform uses an explicit database -> domain mapping rather than a Cartesian product.
+
+### GUEST
+
+The narrow consumer role. It receives:
+
+- database `USAGE`;
+- schema `USAGE` only on configured published schemas;
+- `SELECT` on current/future tables, views and semantic views in published schemas.
+
+Initial published schemas:
+
+```text
+MARTS
+SEMANTIC
+```
+
+GUEST does **not** receive access to `STAGING`, `INTERMEDIATE`, `CANONICAL`, future RAW source schemas, DDL privileges, or transform compute.
 
 ### READ
 
-Baseline privileges:
+Inherits GUEST and can inspect all stable domain schemas. Baseline privileges add:
 
-- database `USAGE`;
-- stable schema `USAGE`;
-- `SELECT` on current/future tables;
-- `SELECT` on current/future views;
-- `SELECT` on current/future semantic views.
+- schema `USAGE` across stable schemas;
+- `SELECT` on current/future tables, views and semantic views across stable schemas.
 
 ### WRITE
 
-Inherits READ and adds ordinary dbt-development DDL on stable schemas:
+Inherits READ and adds core schema DDL for ordinary dbt development:
 
 - `CREATE TABLE`;
 - `CREATE VIEW`;
@@ -86,112 +121,121 @@ Inherits READ and adds ordinary dbt-development DDL on stable schemas:
 - `CREATE FILE FORMAT`;
 - `CREATE SEQUENCE`.
 
-Task/stream/procedure privileges are not pre-granted; they are added when a real pattern requires them.
+Task/stream/procedure privileges are not pre-granted; approved patterns add them when required.
 
 ### OWNER
 
-Inherits WRITE and is the highest governed project tier assigned to `AR_<PROJECT>_ADMIN`.
+Inherits WRITE and represents the domain's highest governed database-access tier assigned to `AR_<DOMAIN>_ADMIN`.
 
-`OWNER` is a capability name; it does not silently transfer ownership of Terraform-managed database/schema objects away from the platform lifecycle owner.
+`OWNER` is an access-tier name. It does not automatically transfer ownership of Terraform-managed database/schema resources away from the platform.
 
-## DEV account mapping
+## Warehouse isolation
 
-Databases:
-
-```text
-DEV_HEALTH
-CI_HEALTH
-DEV_TRANSPORT
-CI_TRANSPORT
-```
-
-Human role mapping:
+Every domain owns separate workload compute:
 
 ```text
-AR_<PROJECT>_READER
-  -> DR_<PROJECT>_ANALYTICS_READ
-
-AR_<PROJECT>_DEVELOPER
-  -> DR_<PROJECT>_ANALYTICS_WRITE
-
-AR_<PROJECT>_ADMIN
-  -> DR_<PROJECT>_ANALYTICS_OWNER
+WH_<DOMAIN>_QUERY
+WH_<DOMAIN>_TRANSFORM
 ```
 
-Human warehouse baseline:
+DEV additionally has:
 
 ```text
-AR_HEALTH_READER     -> WH_HEALTH_DEV
-AR_TRANSPORT_READER  -> WH_TRANSPORT_DEV
-AR_PLATFORM_ENGINEER -> WH_PLATFORM_OPS
+WH_<DOMAIN>_CI
 ```
 
-Because roles inherit upward, developers/admins inherit reader warehouse access.
-
-`WH_HEALTH_CI` and `WH_TRANSPORT_CI` are intentionally not granted to humans. Later CI workload identities receive the required CI database/schema/warehouse privileges.
-
-## UAT account mapping
-
-Databases:
+Current examples:
 
 ```text
-UAT_HEALTH
-UAT_TRANSPORT
+WH_HEALTH_QUERY
+WH_HEALTH_TRANSFORM
+WH_HEALTH_CI
+WH_TRANSPORT_QUERY
+WH_TRANSPORT_TRANSFORM
+WH_TRANSPORT_CI
 ```
 
-Human developer WRITE is disabled:
+The same logical warehouse names can appear in DEV/UAT/PROD because accounts are independent. This is intentional: account identifies environment; warehouse identifies domain + workload.
+
+### Warehouse grants
 
 ```text
-AR_<PROJECT>_READER
-  -> READ
-
-AR_<PROJECT>_DEVELOPER
-  -> inherits READ only
-
-AR_<PROJECT>_ADMIN
-  -> OWNER
+AR_<DOMAIN>_GUEST     -> WH_<DOMAIN>_QUERY
+AR_<DOMAIN>_READER    -> inherits GUEST query compute
 ```
 
-Warehouses:
+DEV adds:
 
 ```text
-AR_HEALTH_READER     -> WH_HEALTH_UAT
-AR_TRANSPORT_READER  -> WH_TRANSPORT_UAT
-AR_PLATFORM_ENGINEER -> WH_PLATFORM_OPS
+AR_<DOMAIN>_DEVELOPER -> WH_<DOMAIN>_TRANSFORM
 ```
 
-Deployment writes will use a separate machine identity rather than broad human developer privileges.
-
-## PROD account mapping
-
-Databases:
+UAT/PROD currently add:
 
 ```text
-PROD_HEALTH
-PROD_TRANSPORT
+AR_<DOMAIN>_ADMIN     -> WH_<DOMAIN>_TRANSFORM
 ```
 
-Developer WRITE remains disabled. Warehouse baseline:
+This human UAT/PROD transform access is transitional. Once workload identity exists, normal deployment compute moves to dedicated machine roles and human admin use becomes exceptional.
+
+`WH_<DOMAIN>_CI` is not granted to human roles; it is reserved for CI workload identities.
+
+## Environment policy
+
+### DEV account
 
 ```text
-AR_HEALTH_READER     -> WH_HEALTH_QUERY
-AR_HEALTH_ADMIN      -> WH_HEALTH_TRANSFORM
-AR_TRANSPORT_READER  -> WH_TRANSPORT_QUERY
-AR_TRANSPORT_ADMIN   -> WH_TRANSPORT_TRANSFORM
-AR_PLATFORM_ENGINEER -> WH_PLATFORM_OPS
+GUEST     -> published read + QUERY
+READER    -> all stable read + inherited QUERY
+DEVELOPER -> WRITE + TRANSFORM + inherited read/query
+ADMIN     -> OWNER + inherited developer capability
 ```
+
+### UAT account
+
+```text
+GUEST     -> published read + QUERY
+READER    -> all stable read
+DEVELOPER -> read-only (no WRITE database-role grant)
+ADMIN     -> OWNER + TRANSFORM
+```
+
+### PROD account
+
+```text
+GUEST     -> published read + QUERY
+READER    -> all stable read
+DEVELOPER -> read-only (no WRITE database-role grant)
+ADMIN     -> OWNER + TRANSFORM
+```
+
+## Human users and guest users
+
+`GUEST` is a role, not a Terraform-managed employee list. Human user lifecycle should come from the enterprise identity system (SSO/IdP/SCIM). A business consumer or external approved user receives only the appropriate domain `GUEST` role unless a broader role is justified.
+
+Do not use the Snowflake `PUBLIC` role as the business guest-access model.
 
 ## Machine identities
 
-Human authority and deployment identity are separate. The next RBAC extension will cover:
+Human authority and machine deployment identity are separate.
 
-- Terraform plan/apply per account;
+The next RBAC extension introduces workload identities for:
+
+- Terraform plan/apply;
 - project CI validation;
-- project DEV/UAT/PROD deployment/promotion;
+- project deployment/promotion;
 - PR schema lifecycle.
 
-Those identities will use WIF/OIDC and least privilege rather than passwords or `ACCOUNTADMIN`.
+Those identities receive only workflow-required privileges and never use `ACCOUNTADMIN` for routine work.
 
-## Human users
+## Future refinements
 
-Human employee lifecycle is not expected to be a list of `snowflake_user` resources in this repository. Enterprise SSO/IdP/SCIM should provision/deprovision people; Terraform owns the platform role/grant model they are assigned into.
+Add only when a real phase requires them:
+
+- WIF/OIDC workload identities;
+- personal DEV schema provisioning;
+- ephemeral PR schema ownership/cleanup;
+- task/stream/procedure execution privileges;
+- governance-policy administration;
+- cost/resource-monitor administration;
+- break-glass recovery roles.
