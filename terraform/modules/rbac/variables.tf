@@ -1,10 +1,10 @@
 variable "project_codes" {
-  description = "Project codes used in account/database role names, for example HEALTH and TRANSPORT."
+  description = "Domain/data-product codes used in account and database role names, for example HEALTH and TRANSPORT."
   type        = set(string)
 }
 
 variable "database_projects" {
-  description = "Mapping of analytics database name to the single owning data-product/project code."
+  description = "Mapping of analytics database name to the single owning domain/data-product code."
   type        = map(string)
 }
 
@@ -13,8 +13,13 @@ variable "stable_schemas_by_database" {
   type        = map(set(string))
 }
 
+variable "published_schemas_by_database" {
+  description = "Published schemas exposed to the domain GUEST role. Normally MARTS and SEMANTIC; must be a subset of stable schemas."
+  type        = map(set(string))
+}
+
 variable "grant_developer_write" {
-  description = "Whether project developer account roles receive the WRITE database role in this account. True in DEV; false in UAT/PROD."
+  description = "Whether domain DEVELOPER account roles receive the WRITE database role in this account. True in DEV; false in UAT/PROD."
   type        = bool
 }
 
