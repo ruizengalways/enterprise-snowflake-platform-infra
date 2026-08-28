@@ -1,0 +1,65 @@
+name: Terraform CI
+
+on:
+  pull_request:
+    paths:
+      - ".github/workflows/terraform-ci.yml"
+      - ".terraform-version"
+      - "config/environments/**"
+      - "terraform/**"
+  push:
+    branches:
+      - main
+    paths:
+      - ".github/workflows/terraform-ci.yml"
+      - ".terraform-version"
+      - "config/environments/**"
+      - "terraform/**"
+
+permissions:
+  contents: read
+
+jobs:
+  fmt:
+    name: terraform fmt
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.0
+          terraform_wrapper: false
+
+      - name: Check formatting
+        run: terraform fmt -check -recursive terraform
+
+  validate:
+    name: validate ${{ matrix.stack }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        stack:
+          - nonprod
+          - prod
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v3
+        with:
+          terraform_version: 1.16.0
+          terraform_wrapper: false
+
+      - name: Terraform init
+        working-directory: terraform/stacks/${{ matrix.stack }}
+        run: terraform init -backend=false -input=false
+
+      - name: Terraform validate
+        working-directory: terraform/stacks/${{ matrix.stack }}
+        run: terraform validate -no-color
