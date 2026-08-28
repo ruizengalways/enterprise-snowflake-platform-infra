@@ -23,7 +23,7 @@ UAT
 PROD
 ```
 
-DEV also hosts ephemeral PR CI. CI is isolated by database/schema/warehouse and a later dedicated workload identity; it is not a fourth Snowflake account.
+DEV also hosts ephemeral PR CI. CI is isolated by database/schema/warehouse and later dedicated project-CI workload identity; it is not a fourth Snowflake account.
 
 ## Analytics databases
 
@@ -155,7 +155,37 @@ GUEST -> READER -> DEVELOPER -> ADMIN
 
 `GUEST` means read-only consumer access to published layers, not anonymous/public access. Human identity is still authenticated through the enterprise identity model.
 
+Platform Terraform machine roles are environment-scoped rather than domain-scoped:
+
+```text
+AR_TERRAFORM_DEV
+AR_TERRAFORM_UAT
+AR_TERRAFORM_PROD
+```
+
+They are dedicated automation roles and do not participate in the human/domain capability hierarchy.
+
 Do not use names such as `JUNIOR`, `SENIOR`, `LEVEL1`, or `LEVEL2`.
+
+## Service users
+
+Machine service-user pattern:
+
+```text
+SU_<SYSTEM>_<PURPOSE>_<ENVIRONMENT>
+```
+
+Current platform Terraform identities:
+
+```text
+SU_GITHUB_TERRAFORM_DEV
+SU_GITHUB_TERRAFORM_UAT
+SU_GITHUB_TERRAFORM_PROD
+```
+
+These are Snowflake `SERVICE` users trusted through GitHub OIDC workload identity federation. Do not encode a human name into service-user identifiers.
+
+Project CI/deployment service-user naming will follow the same convention only when those lifecycles are implemented.
 
 ## Database roles
 
@@ -222,8 +252,8 @@ Access intent:
 - domain `GUEST` receives the domain `QUERY` warehouse;
 - `READER` inherits `GUEST`, so it can query without a duplicate grant;
 - DEV `DEVELOPER` additionally receives the domain `TRANSFORM` warehouse;
-- UAT/PROD human `ADMIN` currently receives `TRANSFORM` until machine deployment identity replaces human deployment access;
-- CI warehouses are reserved for dedicated CI workload identities, not ordinary human roles.
+- UAT/PROD human `ADMIN` currently receives `TRANSFORM` until project deployment identity replaces human deployment access;
+- CI warehouses are reserved for dedicated project CI workload identities, not ordinary human roles.
 
 Do not add separate warehouses unless workload isolation, security, performance, scheduling, or cost attribution justifies them.
 
