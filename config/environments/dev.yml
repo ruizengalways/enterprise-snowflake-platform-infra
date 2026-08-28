@@ -2,6 +2,13 @@ environment: dev
 account:
   logical_name: DEV
 
+terraform_identity:
+  user_name: SU_GITHUB_TERRAFORM_DEV
+  role_name: AR_TERRAFORM_DEV
+  github_environment: dev
+  oidc_issuer: https://token.actions.githubusercontent.com
+  oidc_subject: repo:ruizengalways/enterprise-snowflake-platform-infra:environment:dev
+
 projects:
   health:
     code: HEALTH
