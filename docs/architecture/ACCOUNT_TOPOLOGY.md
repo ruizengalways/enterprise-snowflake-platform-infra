@@ -2,105 +2,123 @@
 
 ## Status
 
-Phase 1 executable baseline. Terraform code exists; shared-account apply remains gated on remote state and workload authentication.
+Phase 1 executable baseline. The platform now targets three Snowflake accounts: DEV, UAT and PROD. Account-level Terraform apply remains gated on remote state and workload authentication.
 
 ## Organisation topology
 
 ```text
-Snowflake Organisation
-├── NONPROD account
-│   ├── ANALYTICS_DEV
-│   ├── ANALYTICS_CI
-│   ├── ANALYTICS_UAT
+Snowflake Organization
+│
+├── DEV account
+│   ├── DEV_HEALTH
+│   ├── CI_HEALTH
+│   ├── DEV_TRANSPORT
+│   ├── CI_TRANSPORT
 │   └── PLATFORM_CONTROL
+│
+├── UAT account
+│   ├── UAT_HEALTH
+│   ├── UAT_TRANSPORT
+│   └── PLATFORM_CONTROL
+│
 └── PROD account
-    ├── ANALYTICS_PROD
+    ├── PROD_HEALTH
+    ├── PROD_TRANSPORT
     └── PLATFORM_CONTROL
 ```
 
-`PLATFORM_CONTROL` intentionally has the same database name in each account. Operational/runtime state remains account-local; cross-account rollups can be introduced later without making one account's control plane a hard runtime dependency of the other.
+Account isolation is used for lifecycle/security boundaries. Database isolation is used for environment × data-product ownership, storage/recovery boundaries and clearer cost attribution.
 
-## NONPROD
+## Why CI stays in DEV
 
-### `ANALYTICS_DEV`
+CI is ephemeral and repository-driven. A fourth CI account would add account-level identity/state/administration without enough benefit at this stage.
 
-Stable project schemas:
+CI therefore shares the DEV account while remaining isolated through:
 
-```text
-HEALTH_STAGING
-HEALTH_INTERMEDIATE
-HEALTH_CANONICAL
-HEALTH_MARTS
-HEALTH_SEMANTIC
-TRANSPORT_STAGING
-TRANSPORT_INTERMEDIATE
-TRANSPORT_CANONICAL
-TRANSPORT_MARTS
-TRANSPORT_SEMANTIC
-```
+- `CI_<PROJECT>` databases;
+- PR-specific schemas;
+- dedicated CI warehouses;
+- later dedicated machine identities;
+- explicit cleanup lifecycle.
 
-Personal developer schemas are not Terraform-managed. Phase 2/3 dbt/bootstrap logic will create names such as:
+## DEV account
+
+Stable development databases:
 
 ```text
-ALICE_HEALTH_STAGING
-ALICE_HEALTH_MARTS
-BOB_TRANSPORT_STAGING
+DEV_HEALTH
+DEV_TRANSPORT
 ```
 
-### `ANALYTICS_CI`
-
-The database is Terraform-managed, but PR schemas are deliberately not declared as stable Terraform resources.
-
-Future delivery workflows create and remove schemas such as:
+Each uses stable transformation schemas:
 
 ```text
-HEALTH_PR_123_STAGING
-HEALTH_PR_123_MARTS
-TRANSPORT_PR_123_STAGING
+STAGING
+INTERMEDIATE
+CANONICAL
+MARTS
+SEMANTIC
 ```
 
-This keeps short-lived CI lifecycle out of long-lived Terraform state.
+Personal schemas are not Terraform-managed. Example inside `DEV_HEALTH`:
 
-### `ANALYTICS_UAT`
+```text
+ALICE_STAGING
+ALICE_MARTS
+```
 
-Contains the same project-qualified stable layers as DEV. UAT is a promotion environment for an immutable project Git SHA, not a separate code branch.
+CI databases:
 
-### NONPROD warehouses
+```text
+CI_HEALTH
+CI_TRANSPORT
+```
+
+Terraform creates the databases but not the ephemeral PR schemas. Future delivery workflows create/remove names such as `PR_123_STAGING` inside the owning project's CI database.
+
+DEV warehouses:
 
 ```text
 WH_HEALTH_DEV
 WH_HEALTH_CI
-WH_HEALTH_UAT
 WH_TRANSPORT_DEV
 WH_TRANSPORT_CI
+WH_PLATFORM_OPS
+```
+
+CI warehouses are reserved for later machine identities rather than broad human access.
+
+## UAT account
+
+Databases:
+
+```text
+UAT_HEALTH
+UAT_TRANSPORT
+```
+
+UAT is intentionally a separate account so promotion can validate account-scoped RBAC, identities, integrations, parameters and operational configuration before production.
+
+Human developers are read-only by default in UAT; project admins retain the governed owner tier. Deployment will use a separate machine identity.
+
+Warehouses:
+
+```text
+WH_HEALTH_UAT
 WH_TRANSPORT_UAT
 WH_PLATFORM_OPS
 ```
 
-CI warehouses are intentionally not granted to human project roles in the current baseline. They are reserved for the later CI workload identity.
+## PROD account
 
-## PROD
-
-### `ANALYTICS_PROD`
-
-Stable project schemas:
+Databases:
 
 ```text
-HEALTH_STAGING
-HEALTH_INTERMEDIATE
-HEALTH_CANONICAL
-HEALTH_MARTS
-HEALTH_SEMANTIC
-TRANSPORT_STAGING
-TRANSPORT_INTERMEDIATE
-TRANSPORT_CANONICAL
-TRANSPORT_MARTS
-TRANSPORT_SEMANTIC
+PROD_HEALTH
+PROD_TRANSPORT
 ```
 
-Project qualification is mandatory because Health and Transport coexist in the same analytics database. See ADR-016.
-
-### PROD warehouses
+PROD warehouses:
 
 ```text
 WH_HEALTH_TRANSFORM
@@ -110,11 +128,31 @@ WH_TRANSPORT_QUERY
 WH_PLATFORM_OPS
 ```
 
-Transform and query workloads are separated in PROD to make deployment/runtime compute and consumer query compute independently controllable and observable.
+Transform and query compute are separated in PROD so deployment/runtime compute and consumer query compute can be controlled and attributed independently.
+
+## Database boundary and many physical sources
+
+A project may ingest many MSSQL, MySQL, API, file or streaming sources without creating one database per source.
+
+Example:
+
+```text
+PROD_HEALTH
+├── RAW_EHR_MSSQL          # later, when source onboarding requires it
+├── RAW_BOOKING_MYSQL      # later
+├── RAW_INSURANCE_API      # later
+├── STAGING
+├── INTERMEDIATE
+├── CANONICAL
+├── MARTS
+└── SEMANTIC
+```
+
+The project database is the ownership/storage/recovery boundary. Source-level cost attribution additionally uses warehouses, query tags and Snowflake usage/storage metadata. See ADR-019.
 
 ## `PLATFORM_CONTROL`
 
-Both accounts create the structural schemas:
+Every account owns an independent `PLATFORM_CONTROL` database with:
 
 ```text
 DEPLOYMENT
@@ -123,24 +161,36 @@ OBSERVABILITY
 OPERATIONS
 ```
 
-Phase 1 creates only the database/schema structure. Runtime tables are added when the first real deployment, quality, observability, or recovery consumer exists; this avoids speculative table design.
+Account-local operational state avoids making DEV/UAT/PROD availability depend on a central cross-account control database. Cross-account reporting can aggregate later.
 
 ## Retention baseline
 
-Initial configuration uses one day of Time Travel retention for portability across Snowflake editions. Higher retention is a deliberate environment configuration change once account edition, recovery objectives, and storage cost are known.
+Initial configuration uses one day of Time Travel retention for portability across Snowflake editions. Higher retention is a deliberate environment/project setting after recovery objectives, edition and storage cost are known.
 
 ## Ownership
 
-- Terraform via a `SYSADMIN` provider alias owns analytics databases, stable schemas, warehouses, and the structural `PLATFORM_CONTROL` database/schemas.
-- Terraform via `SECURITYADMIN` manages account-role hierarchy and grants.
-- Personal DEV and PR CI schema lifecycle is not Terraform-owned.
-- dbt owns transformation objects inside project schemas in later phases.
+- Organization bootstrap owns creation of DEV/UAT/PROD accounts and requires narrowly controlled organization-level privilege.
+- Account Terraform stacks own databases, stable schemas, warehouses, structural `PLATFORM_CONTROL`, account roles, database roles and grants.
+- Personal DEV and PR CI schema lifecycle is not long-lived Terraform state.
+- dbt owns transformation relations inside project databases in later phases.
+- Human user lifecycle is expected to come from enterprise identity/SSO/SCIM rather than employee records in Terraform.
+
+## Terraform stacks
+
+```text
+terraform/stacks/dev/
+terraform/stacks/uat/
+terraform/stacks/prod/
+```
+
+Each account eventually receives an independent remote-state and workload-identity boundary.
 
 ## Apply gate
 
-The code is intentionally safe to validate without Snowflake credentials. Do not automate apply until:
+Do not automate shared apply until:
 
-1. a durable remote Terraform backend is selected and documented;
-2. workload identity/WIF is configured;
-3. account identifiers and trust are tested;
-4. a reviewed plan is produced for NONPROD first.
+1. durable remote Terraform state is selected and documented;
+2. workload identity federation is configured;
+3. target account identifiers/trust are tested;
+4. a reviewed DEV plan is produced first;
+5. DEV is verified before enabling UAT, then PROD.
