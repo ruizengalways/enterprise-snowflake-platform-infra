@@ -13,7 +13,7 @@
 3. Health/Transport repositories stay thin; shared technical behaviour belongs in framework/platform repositories.
 4. Reusable GitHub workflows live under `.github/workflows/`.
 5. Terraform is split into reusable capability modules plus isolated deployable roots.
-6. Organization-level Terraform is separate from routine account-level Terraform.
+6. Organization bootstrap, workload-identity bootstrap and routine account infrastructure use separate lifecycle/state roots.
 7. Snowflake-native SQL is separated by lifecycle purpose from dbt models.
 8. Configuration is non-secret metadata, never credentials.
 9. Planned folders appear only when implementation reaches them.
@@ -33,6 +33,7 @@ enterprise-snowflake-platform-infra/
 │   │   ├── REPOSITORY_LAYOUT.md
 │   │   ├── ACCOUNT_TOPOLOGY.md
 │   │   ├── RBAC_MODEL.md
+│   │   ├── TERRAFORM_STATE_AND_IDENTITY.md
 │   │   └── RELEASE_AND_RECOVERY.md          # Phase 3
 │   ├── adr/
 │   │   └── ADR-*.md
@@ -46,7 +47,7 @@ enterprise-snowflake-platform-infra/
 ├── config/
 │   ├── organization.yml                     # DEV/UAT/PROD account contract
 │   ├── environments/
-│   │   ├── dev.yml
+│   │   ├── dev.yml                          # includes Terraform WIF identity metadata
 │   │   ├── uat.yml
 │   │   └── prod.yml
 │   ├── projects/
@@ -63,30 +64,31 @@ enterprise-snowflake-platform-infra/
 │   │   ├── warehouse/                       # standard warehouse guardrails
 │   │   ├── rbac/                            # platform/domain roles + database roles + grants
 │   │   ├── platform-control/                # PLATFORM_CONTROL structure
-│   │   ├── workload-identity/               # later Phase 1
+│   │   ├── workload-identity/               # GitHub OIDC SERVICE user + AR_TERRAFORM role
 │   │   └── cost-controls/                   # later Phase 1
 │   └── stacks/
 │       ├── organization/                    # ORGADMIN only; account creation/import
+│       │   ├── backend.tf
 │       │   ├── versions.tf
 │       │   ├── providers.tf
 │       │   ├── variables.tf
 │       │   ├── main.tf
-│       │   └── outputs.tf
-│       ├── dev/
+│       │   ├── outputs.tf
+│       │   └── .terraform.lock.hcl
+│       ├── identity/
+│       │   ├── dev/                         # ACCOUNTADMIN bootstrap only
+│       │   ├── uat/
+│       │   └── prod/
+│       │       # each identity root has backend/versions/providers/variables/main/outputs/lock
+│       ├── dev/                             # routine AR_TERRAFORM_DEV
+│       │   ├── backend.tf
 │       │   ├── versions.tf
 │       │   ├── providers.tf
 │       │   ├── main.tf
-│       │   └── outputs.tf
-│       ├── uat/
-│       │   ├── versions.tf
-│       │   ├── providers.tf
-│       │   ├── main.tf
-│       │   └── outputs.tf
-│       └── prod/
-│           ├── versions.tf
-│           ├── providers.tf
-│           ├── main.tf
-│           └── outputs.tf
+│       │   ├── outputs.tf
+│       │   └── .terraform.lock.hcl
+│       ├── uat/                             # routine AR_TERRAFORM_UAT
+│       └── prod/                            # routine AR_TERRAFORM_PROD
 │
 ├── snowflake/
 │   ├── bootstrap/                           # only if privileged SQL bootstrap is required
@@ -98,23 +100,26 @@ enterprise-snowflake-platform-infra/
 │
 └── .github/
     └── workflows/
-        ├── terraform-ci.yml
-        ├── terraform-plan-dev.yml            # after state/WIF
-        ├── terraform-apply-dev.yml           # protected
-        ├── terraform-plan-uat.yml            # later
-        ├── terraform-apply-uat.yml            # protected
-        ├── terraform-plan-prod.yml           # later
+        ├── terraform-ci.yml                 # fmt + all seven root validates
+        ├── terraform-plan-dev.yml           # implemented; manual-only, remote state + WIF
+        ├── terraform-apply-dev.yml           # only after real DEV plan review
+        ├── terraform-plan-uat.yml            # after DEV is proven
+        ├── terraform-apply-uat.yml
+        ├── terraform-plan-prod.yml           # after UAT is proven
         └── terraform-apply-prod.yml           # protected/approved
 ```
 
 ### Platform Infra rules
 
 - `organization/` is the only root allowed to use ORGADMIN; normal account stacks never create Snowflake accounts.
-- Organization/DEV/UAT/PROD eventually use independent remote state.
+- `identity/<env>/` owns the platform Terraform service user, OIDC trust and `AR_TERRAFORM_<ENV>` role; routine platform state never owns its own authentication identity.
+- Routine `dev/uat/prod` roots activate only their dedicated Terraform machine role.
+- All seven Terraform roots use partial S3 backend configuration with separate state keys and native S3 lockfiles.
+- The S3 state bucket is an external control-plane prerequisite; it is not recursively bootstrapped by a state stored in itself.
 - `terraform/` owns selected stable infrastructure state.
 - `snowflake/` owns selected native SQL objects when Terraform/dbt is not the clearer lifecycle owner.
-- `config/` provides non-secret declarative inputs.
-- Terraform state, real `.tfvars`, private keys, passwords and tokens are never committed.
+- `config/` provides non-secret declarative inputs. OIDC subjects may be committed; credentials/tokens may not.
+- Terraform state, real `.tfvars`, private keys, passwords, cloud access keys and tokens are never committed.
 - No separate top-level `observability/` folder unless a future asset type genuinely requires it.
 
 ### Current Phase 1 domain convention
@@ -132,6 +137,15 @@ WH_TRANSPORT_QUERY / WH_TRANSPORT_TRANSFORM
 DEV additionally contains `CI_<DOMAIN>` databases and `WH_<DOMAIN>_CI` warehouses.
 
 RBAC is domain-specific and includes `GUEST -> READER -> DEVELOPER -> ADMIN`; GUEST is published-data read-only.
+
+### Current state/identity convention
+
+```text
+GitHub OIDC -> AWS IAM -> S3 state/.tflock
+GitHub OIDC -> SU_GITHUB_TERRAFORM_<ENV> -> AR_TERRAFORM_<ENV> -> routine Terraform
+```
+
+The first remote execution path is manual DEV plan only. UAT/PROD plan/apply workflows stay deferred until the previous environment is proven.
 
 ## 3. `enterprise-snowflake-data-project-framework`
 
@@ -286,8 +300,10 @@ Do not create cosmetic placeholder content before the relevant phase for:
 - direct Snowpipe Streaming;
 - Openflow;
 - masking/row-access policies;
-- workload identity implementation;
 - cost-control implementation;
+- DEV apply automation until real DEV plan is reviewed;
+- UAT/PROD platform plan/apply automation until the preceding environment is proven;
+- project CI/deployment workload identities;
 - production rollback automation;
 - recovery procedures;
 - semantic regression tooling;
