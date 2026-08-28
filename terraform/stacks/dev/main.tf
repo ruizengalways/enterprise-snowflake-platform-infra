@@ -66,13 +66,21 @@ module "rbac" {
     environment.database_name => toset(local.config.analytics_databases[key].schemas)
   }
 
-  # DEV is the only human environment where the developer role receives WRITE.
-  # CI database/warehouse access will move to a dedicated workload identity.
+  published_schemas_by_database = {
+    for key, environment in module.analytics_environment :
+    environment.database_name => toset(local.config.analytics_databases[key].published_schemas)
+  }
+
+  # DEV is the only human environment where DEVELOPER receives WRITE.
+  # GUEST/READER use the domain query warehouse; DEVELOPER adds transform compute.
+  # CI database/warehouse access moves to a dedicated workload identity.
   grant_developer_write = true
 
   warehouse_grants = {
-    AR_HEALTH_READER      = toset([module.warehouse["health_dev"].fully_qualified_name])
-    AR_TRANSPORT_READER   = toset([module.warehouse["transport_dev"].fully_qualified_name])
-    AR_PLATFORM_ENGINEER  = toset([module.warehouse["platform_ops"].fully_qualified_name])
+    AR_HEALTH_GUEST        = toset([module.warehouse["health_query"].fully_qualified_name])
+    AR_HEALTH_DEVELOPER    = toset([module.warehouse["health_transform"].fully_qualified_name])
+    AR_TRANSPORT_GUEST     = toset([module.warehouse["transport_query"].fully_qualified_name])
+    AR_TRANSPORT_DEVELOPER = toset([module.warehouse["transport_transform"].fully_qualified_name])
+    AR_PLATFORM_ENGINEER   = toset([module.warehouse["platform_ops"].fully_qualified_name])
   }
 }
