@@ -10,88 +10,136 @@ These standards apply to `enterprise-snowflake-platform-infra`.
 - Snowflake provider is pinned exactly in each root stack.
 - Current baseline: Terraform `1.16.0`, `snowflakedb/snowflake` provider `2.19.0`.
 - Provider upgrades require migration-guide review and CI validation; do not use an unbounded `latest` constraint.
-- `.terraform.lock.hcl` is committed after a successful connected `terraform init` for each root.
+- `.terraform.lock.hcl` is committed for every root and CI uses `-lockfile=readonly`.
 
 ## Authentication
 
-Never place passwords, private keys, OAuth tokens, PATs, or account secrets in Git.
+Never place passwords, private keys, OAuth tokens, PATs, or cloud access keys in Git.
 
-Routine account stacks use provider aliases:
-
-```text
-snowflake.sysadmin
-snowflake.securityadmin
-```
-
-GitHub -> Snowflake Workload Identity Federation is the target routine machine-authentication mechanism.
-
-`ACCOUNTADMIN` is not a routine Terraform execution role.
-
-Organization bootstrap alone uses:
+Routine DEV/UAT/PROD roots expose lifecycle provider aliases:
 
 ```text
-snowflake.orgadmin
+snowflake.objects
+snowflake.security
 ```
 
-Its initial account-admin email and RSA public key are variables supplied outside source control. The private key is never committed.
+Both aliases run under the environment's dedicated routine Terraform account role:
 
-## Organization bootstrap boundary
+```text
+DEV  -> AR_TERRAFORM_DEV
+UAT  -> AR_TERRAFORM_UAT
+PROD -> AR_TERRAFORM_PROD
+```
 
-Provider `2.19.0` exposes stable `snowflake_account`. The isolated root is:
+They do **not** use `SYSADMIN` or `SECURITYADMIN` as the routine CI authority.
+
+GitHub -> Snowflake authentication uses Workload Identity Federation with GitHub OIDC. The matching Snowflake service users are:
+
+```text
+SU_GITHUB_TERRAFORM_DEV
+SU_GITHUB_TERRAFORM_UAT
+SU_GITHUB_TERRAFORM_PROD
+```
+
+`ACCOUNTADMIN` is permitted only in the separate identity bootstrap lifecycle. Organization account creation uses the separate organization bootstrap provider authority.
+
+## Privileged bootstrap boundaries
+
+Organization root:
 
 ```text
 terraform/stacks/organization/
 ```
 
-It reads `config/organization.yml` and owns DEV/UAT/PROD account resources. Account resources use `prevent_destroy = true`.
+It owns DEV/UAT/PROD Snowflake account resources and protects them with `prevent_destroy`.
 
-Normal DEV/UAT/PROD roots never create accounts and never use ORGADMIN.
+Identity roots:
 
-## State
+```text
+terraform/stacks/identity/dev/
+terraform/stacks/identity/uat/
+terraform/stacks/identity/prod/
+```
+
+They own each environment's GitHub OIDC service user and routine Terraform role. Service users and machine roles use `prevent_destroy`.
+
+Normal DEV/UAT/PROD roots never create Snowflake accounts or their own authentication identity.
+
+## Routine Terraform role privileges
+
+Initial account-level privileges are deliberately explicit:
+
+```text
+CREATE DATABASE
+CREATE ROLE
+CREATE WAREHOUSE
+MANAGE GRANTS
+```
+
+Do not grant `ACCOUNTADMIN`, `SYSADMIN`, or `SECURITYADMIN` to routine GitHub Terraform users. Add another privilege only when an implemented Terraform-owned capability requires it.
+
+`MANAGE GRANTS` is powerful; `AR_TERRAFORM_<ENV>` is therefore machine-only and is never a domain/human role.
+
+## Remote state
 
 Terraform state is never committed.
 
-Shared execution requires four independent durable state boundaries with locking/recovery:
+Reference backend: Amazon S3 with:
 
-```text
-organization state
-DEV state
-UAT state
-PROD state
+```hcl
+terraform {
+  backend "s3" {
+    encrypt      = true
+    use_lockfile = true
+  }
+}
 ```
 
-Do not share one undifferentiated state file across accounts or combine organization-level authority with routine account state.
+Bucket and region are supplied as partial backend configuration. Do not use DynamoDB locking.
 
-Backend technology remains undecided until the hosting/security boundary is selected. Until the backend ADR is accepted, CI may run `fmt`, `init -backend=false`, and `validate`; automated apply remains disabled.
+The state bucket is a one-time control-plane prerequisite and must have versioning, encryption, blocked public access, restrictive IAM and recovery/audit coverage.
+
+State object boundaries:
+
+```text
+enterprise-snowflake-platform-infra/organization/terraform.tfstate
+enterprise-snowflake-platform-infra/identity/dev/terraform.tfstate
+enterprise-snowflake-platform-infra/identity/uat/terraform.tfstate
+enterprise-snowflake-platform-infra/identity/prod/terraform.tfstate
+enterprise-snowflake-platform-infra/platform/dev/terraform.tfstate
+enterprise-snowflake-platform-infra/platform/uat/terraform.tfstate
+enterprise-snowflake-platform-infra/platform/prod/terraform.tfstate
+```
+
+GitHub uses AWS OIDC to access state. Do not store AWS access keys in GitHub.
+
+See ADR-022 and `docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md`.
 
 ## Root stack pattern
 
-Deployable roots:
+Current roots:
 
 ```text
 terraform/stacks/organization/
+terraform/stacks/identity/dev/
+terraform/stacks/identity/uat/
+terraform/stacks/identity/prod/
 terraform/stacks/dev/
 terraform/stacks/uat/
 terraform/stacks/prod/
 ```
 
-Organization root:
+Routine account roots:
 
-1. pins Terraform/provider versions;
-2. uses only ORGADMIN provider authority;
-3. reads `config/organization.yml`;
-4. contains no routine database/RBAC/project logic;
-5. protects account resources from ordinary destroy.
-
-Account roots:
-
-1. pin Terraform/provider versions;
-2. configure SYSADMIN/SECURITYADMIN aliases;
-3. read their YAML from `config/environments/`;
+1. pin Terraform/provider versions and committed lock files;
+2. use the environment-specific `AR_TERRAFORM_<ENV>` role;
+3. read YAML from `config/environments/`;
 4. compose reusable modules;
 5. contain no credentials;
 6. expose useful object-name outputs;
 7. contain no domain business logic.
+
+Identity roots are separate because routine automation must not own the state that can destroy its own authentication path.
 
 ## Module pattern
 
@@ -100,13 +148,36 @@ Initial modules:
 - `analytics-environment` — one domain analytics database plus stable schemas;
 - `warehouse` — standard warehouse guardrails;
 - `platform-control` — account-local `PLATFORM_CONTROL` database/schemas;
-- `rbac` — platform/domain account roles, domain database roles, guest/read/write access and warehouse grants.
+- `rbac` — platform/domain account roles, domain database roles, guest/read/write access and warehouse grants;
+- `workload-identity` — Snowflake service user + dedicated routine Terraform role + GitHub OIDC trust.
 
 A database passed to RBAC has exactly one owning domain through `database_projects`. Do not recreate a domain × database Cartesian product.
 
-Published consumer schemas are passed separately through `published_schemas_by_database`; they must be a subset of the stable schemas and initially represent `MARTS` and `SEMANTIC`.
+Published consumer schemas are passed separately through `published_schemas_by_database`; they must be a subset of stable schemas and initially represent `MARTS` and `SEMANTIC`.
 
 Do not create a module only to wrap a single line or hide genuine business differences.
+
+## OIDC rules
+
+GitHub Environments are named exactly:
+
+```text
+dev
+uat
+prod
+```
+
+Snowflake OIDC subjects are pinned to repository + environment, for example:
+
+```text
+repo:ruizengalways/enterprise-snowflake-platform-infra:environment:dev
+```
+
+Use an account-scoped `SNOWFLAKE_OIDC_AUDIENCE`; do not use the shared `snowflakecomputing.com` audience for these Terraform identities.
+
+The Snowflake provider's WIF-management experiment `USER_ENABLE_DEFAULT_WORKLOAD_IDENTITY` is enabled only in identity bootstrap roots. Routine WIF authentication itself does not require that experiment in normal roots.
+
+See ADR-023.
 
 ## Resource ownership
 
@@ -144,7 +215,7 @@ WH_<DOMAIN>_TRANSFORM
 WH_<DOMAIN>_CI   # DEV only
 ```
 
-Configuration may describe database/domain mapping, stable schemas, published schemas, retention, warehouse sizing and timeout guardrails. Credentials are never configuration metadata.
+Configuration may describe database/domain mapping, stable schemas, published schemas, retention, warehouse sizing, timeouts and workload-identity names/subjects. Credentials are never configuration metadata.
 
 ## Warehouse defaults
 
@@ -159,25 +230,20 @@ Baseline warehouses use conservative settings unless evidence requires otherwise
 - no query acceleration by default;
 - no multi-cluster scaling without evidence.
 
-Cost/resource monitors remain a later Phase 1 capability because their administrative boundary should not silently force routine Terraform to use `ACCOUNTADMIN`.
+Cost/resource monitors remain a later Phase 1 capability.
 
 ## Validation
 
-Every Terraform change must pass for all roots:
+Every Terraform change must pass:
 
 ```text
 terraform fmt -check -recursive
-terraform init -backend=false
+terraform init -backend=false -input=false -lockfile=readonly
 terraform validate
 ```
 
-Current CI matrix targets:
+Current static CI matrix targets all seven roots.
 
-```text
-organization
-dev
-uat
-prod
-```
+Remote plan is deliberately separate from static CI. `terraform-plan-dev.yml` is manual-only and requires the real S3/AWS OIDC and Snowflake WIF configuration before it can execute.
 
-Plan/apply checks are added only after authentication and remote state are established.
+No automated apply is enabled yet.
