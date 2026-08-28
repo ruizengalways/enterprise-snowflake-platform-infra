@@ -27,6 +27,8 @@ config/environments/uat.yml
 config/environments/prod.yml
 ```
 
+Every root commits its own `.terraform.lock.hcl`. CI uses `terraform init -lockfile=readonly` so dependency drift cannot be silently accepted.
+
 ## Versions
 
 ```text
@@ -35,9 +37,11 @@ Snowflake Terraform provider:   2.19.0
 Provider source:                snowflakedb/snowflake
 ```
 
+Provider checksums are locked for Linux amd64, macOS amd64 and macOS arm64.
+
 ## Organization bootstrap
 
-`terraform/stacks/organization` is the only root that uses `ORGADMIN`. It creates or imports the three environment accounts:
+`terraform/stacks/organization` is the only root that uses `ORGADMIN`. It creates or imports:
 
 ```text
 DEV
@@ -69,11 +73,11 @@ PROD account
 
 Each account also has `PLATFORM_CONTROL`.
 
-A database represents environment × data product/domain, not physical source system. Ten Health sources can still land under the Health project database, with source-purpose RAW schemas introduced when those sources are actually onboarded.
+A database represents environment × data product/domain, not physical source system. Multiple MSSQL/MySQL/API/file/streaming sources can belong to one domain database, with RAW source schemas added only when those sources are onboarded.
 
 ## Domain RBAC
 
-Every domain receives an independent account-role hierarchy:
+Every domain receives:
 
 ```text
 AR_<DOMAIN>_GUEST
@@ -95,7 +99,7 @@ DR_<DOMAIN>_ANALYTICS_GUEST
 
 ## Domain warehouses
 
-Account already identifies environment, so warehouse naming focuses on domain + workload:
+Account identifies environment, so normal warehouse names identify domain + workload:
 
 ```text
 WH_HEALTH_QUERY
@@ -114,11 +118,9 @@ WH_TRANSPORT_CI
 
 GUEST receives the domain QUERY warehouse. DEV DEVELOPER additionally receives TRANSFORM. UAT/PROD ADMIN currently receives TRANSFORM until deployment workload identity takes over. CI warehouses are reserved for machine identities.
 
-This gives useful compute cost attribution without creating database-per-source.
-
 ## Provider roles
 
-Account stacks define:
+Routine account roots currently define:
 
 ```text
 snowflake.sysadmin
@@ -131,29 +133,28 @@ Organization bootstrap defines:
 snowflake.orgadmin
 ```
 
-No credentials or private keys are stored in Terraform source. WIF/OIDC is the target routine CI/CD authentication mechanism.
+No passwords or private keys are stored in source control. WIF/OIDC is the target routine CI/CD authentication mechanism.
 
-## Local validation
+## Validation baseline
 
-```bash
+GitHub Actions has now successfully executed this baseline for all four roots:
+
+```text
 terraform fmt -check -recursive terraform
-
-for stack in organization dev uat prod; do
-  terraform -chdir="terraform/stacks/${stack}" init -backend=false
-  terraform -chdir="terraform/stacks/${stack}" validate
-done
+terraform init -backend=false -input=false -lockfile=readonly
+terraform validate -no-color
 ```
 
-GitHub Actions is configured for the same credential-free validation matrix.
+The current static Terraform foundation therefore validates against the committed Snowflake provider lock files.
 
 ## Apply policy
 
 Automated apply remains disabled until:
 
-1. durable independent remote state is chosen for organization/DEV/UAT/PROD;
-2. organization bootstrap credentials are handled through a controlled one-time process;
+1. durable independent remote state is selected for organization/DEV/UAT/PROD;
+2. organization bootstrap inputs are handled through a controlled secret process;
 3. GitHub workload identity federation is implemented/tested for routine account stacks;
-4. target account identifiers and execution roles are verified;
+4. target account identifiers and least-privilege execution roles are verified;
 5. a DEV plan is reviewed/applied first;
 6. Snowflake-side RBAC/object verification passes;
 7. UAT is proven before any PROD path is enabled.
@@ -165,7 +166,7 @@ Automated apply remains disabled until:
 - DEV/UAT/PROD accounts from `config/organization.yml`;
 - Enterprise edition baseline;
 - bootstrap SERVICE administrator using external RSA public-key input;
-- protected account lifecycle with `prevent_destroy`.
+- `prevent_destroy` account lifecycle protection.
 
 ### DEV account
 
@@ -183,7 +184,7 @@ Automated apply remains disabled until:
 - stable transformation schemas;
 - domain query/transform warehouses plus `WH_PLATFORM_OPS`;
 - published-layer GUEST access;
-- developers read-only by default; admins retain the governed owner/transform tier until machine deployment exists.
+- developers read-only by default; admins retain owner/transform tier until machine deployment exists.
 
 ### PROD account
 
