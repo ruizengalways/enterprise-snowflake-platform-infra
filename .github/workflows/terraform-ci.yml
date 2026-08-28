@@ -43,7 +43,8 @@ jobs:
       fail-fast: false
       matrix:
         stack:
-          - nonprod
+          - dev
+          - uat
           - prod
 
     steps:
