@@ -60,6 +60,8 @@ config/environments/prod.yml
 
 `organization/` alone uses ORGADMIN and manages DEV/UAT/PROD account resources with `prevent_destroy`. Routine account roots use lower account-level authority and will move to WIF/OIDC.
 
+Each Terraform root commits `.terraform.lock.hcl`; CI successfully validates all four roots using the lock files in read-only mode.
+
 Database boundary is environment × domain, for example `DEV_HEALTH`, `CI_HEALTH`, `UAT_TRANSPORT`, and `PROD_TRANSPORT`. Physical source systems do not each receive a database merely for cost attribution.
 
 ## Domain access and compute
@@ -87,8 +89,8 @@ This gives Health, Transport, and future domains independent access and compute/
 
 **Phase 1 — Platform Foundation is in progress.**
 
-Completed in source: version pinning, organization bootstrap root, three-account environment metadata, domain database/schema modules, workload warehouse guardrails, structural `PLATFORM_CONTROL`, domain GUEST/READER/DEVELOPER/ADMIN RBAC, DEV/UAT/PROD roots, and validation-only GitHub Actions CI.
+Proven in source/CI: version pinning, committed provider lock files, organization bootstrap root, three-account environment metadata, domain database/schema modules, workload warehouse guardrails, structural `PLATFORM_CONTROL`, domain GUEST/READER/DEVELOPER/ADMIN RBAC, DEV/UAT/PROD roots, and credential-free `fmt/init/validate` across all four Terraform roots.
 
-Still pending before Phase 1 exit: successful Terraform execution/lock files, remote state, WIF/OIDC machine identities, controlled organization bootstrap/import, reviewed DEV plan/apply, Snowflake-side verification, personal/PR schema lifecycle, and cost-control hardening.
+Still pending before Phase 1 exit: durable remote state, WIF/OIDC least-privilege machine identities, controlled organization bootstrap/import, reviewed DEV plan/apply, Snowflake-side verification, personal/PR schema lifecycle, and cost-control hardening.
 
 Kafka, Snowpipe Streaming, Openflow and broad dbt modelling remain intentionally deferred.
