@@ -11,6 +11,7 @@ Define stable naming rules for the Enterprise Snowflake Platform. Physical envir
 - Names describe capability, workload or ownership—not employee seniority.
 - Avoid technology-specific names in downstream business objects unless the technology itself is the object's purpose.
 - Environment-specific names are resolved from configuration.
+- Any namespace shared by multiple project repositories must include a project discriminator where collisions are possible.
 
 ## Accounts and databases
 
@@ -32,7 +33,13 @@ Central control database:
 
 ## Schemas
 
-Stable project schemas use functional names:
+Because analytics databases are shared by multiple project repositories, stable project schemas are project-qualified:
+
+```text
+<PROJECT>_<LAYER>
+```
+
+Approved initial layers:
 
 - `STAGING`
 - `INTERMEDIATE`
@@ -40,29 +47,41 @@ Stable project schemas use functional names:
 - `MARTS`
 - `SEMANTIC`
 
+Examples:
+
+- `HEALTH_STAGING`
+- `HEALTH_INTERMEDIATE`
+- `HEALTH_CANONICAL`
+- `HEALTH_MARTS`
+- `HEALTH_SEMANTIC`
+- `TRANSPORT_STAGING`
+- `TRANSPORT_MARTS`
+
 Personal DEV schemas:
 
 ```text
-<DEVELOPER>_<LAYER>
+<DEVELOPER>_<PROJECT>_<LAYER>
 ```
 
 Examples:
 
-- `ALICE_STAGING`
-- `ALICE_INTERMEDIATE`
-- `ALICE_MARTS`
+- `ALICE_HEALTH_STAGING`
+- `ALICE_HEALTH_INTERMEDIATE`
+- `BOB_TRANSPORT_MARTS`
 
 Ephemeral PR CI schemas:
 
 ```text
-PR_<NUMBER>_<LAYER>
+<PROJECT>_PR_<NUMBER>_<LAYER>
 ```
 
 Examples:
 
-- `PR_123_STAGING`
-- `PR_123_INTERMEDIATE`
-- `PR_123_MARTS`
+- `HEALTH_PR_123_STAGING`
+- `HEALTH_PR_123_MARTS`
+- `TRANSPORT_PR_123_STAGING`
+
+PR numbers are repository-local, so project qualification is mandatory. See ADR-016.
 
 ## Account roles
 
@@ -109,6 +128,8 @@ Examples:
 - `DR_HEALTH_ANALYTICS_WRITE`
 - `DR_HEALTH_ANALYTICS_OWNER`
 
+Database-role names may repeat across different analytics databases because the database itself is part of the database-role identifier.
+
 ## Warehouses
 
 Pattern:
@@ -117,14 +138,27 @@ Pattern:
 WH_<SCOPE>_<WORKLOAD>
 ```
 
-Initial examples:
+For project workloads, `<SCOPE>` is normally the project code because this gives useful cost and workload isolation without multiplying warehouses unnecessarily.
 
-- `WH_PLATFORM_ADMIN`
+NONPROD examples:
+
+- `WH_HEALTH_DEV`
+- `WH_HEALTH_CI`
+- `WH_HEALTH_UAT`
+- `WH_TRANSPORT_DEV`
+- `WH_TRANSPORT_CI`
+- `WH_TRANSPORT_UAT`
+- `WH_PLATFORM_OPS`
+
+PROD examples:
+
 - `WH_HEALTH_TRANSFORM`
+- `WH_HEALTH_QUERY`
 - `WH_TRANSPORT_TRANSFORM`
-- `WH_CI`
+- `WH_TRANSPORT_QUERY`
+- `WH_PLATFORM_OPS`
 
-Warehouse topology, sizing and environment-specific instantiation are Phase 1 decisions. Do not create extra warehouses merely to make the architecture look more complex.
+Do not add separate warehouses unless workload isolation, security, performance, scheduling, or cost attribution justifies them.
 
 ## Platform control schemas
 
