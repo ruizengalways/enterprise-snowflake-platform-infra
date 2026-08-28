@@ -54,8 +54,12 @@ module "rbac" {
     snowflake.sysadmin      = snowflake.sysadmin
   }
 
-  project_codes   = local.project_codes
-  database_names = toset([for environment in module.analytics_environment : environment.database_name])
+  project_codes = local.project_codes
+
+  database_projects = {
+    for key, environment in module.analytics_environment :
+    environment.database_name => local.config.analytics_databases[key].project_code
+  }
 
   stable_schemas_by_database = {
     for key, environment in module.analytics_environment :
@@ -63,14 +67,14 @@ module "rbac" {
   }
 
   # PROD developers remain read-only. Project admins receive OWNER database
-  # roles and the transform warehouse; machine deployment identity is separate.
+  # roles and transform warehouse access; machine deployment identity is separate.
   grant_developer_write = false
 
   warehouse_grants = {
-    AR_HEALTH_READER       = toset([module.warehouse["health_query"].fully_qualified_name])
-    AR_HEALTH_ADMIN        = toset([module.warehouse["health_transform"].fully_qualified_name])
-    AR_TRANSPORT_READER    = toset([module.warehouse["transport_query"].fully_qualified_name])
-    AR_TRANSPORT_ADMIN     = toset([module.warehouse["transport_transform"].fully_qualified_name])
-    AR_PLATFORM_ENGINEER   = toset([module.warehouse["platform_ops"].fully_qualified_name])
+    AR_HEALTH_READER      = toset([module.warehouse["health_query"].fully_qualified_name])
+    AR_HEALTH_ADMIN       = toset([module.warehouse["health_transform"].fully_qualified_name])
+    AR_TRANSPORT_READER   = toset([module.warehouse["transport_query"].fully_qualified_name])
+    AR_TRANSPORT_ADMIN    = toset([module.warehouse["transport_transform"].fully_qualified_name])
+    AR_PLATFORM_ENGINEER  = toset([module.warehouse["platform_ops"].fully_qualified_name])
   }
 }
