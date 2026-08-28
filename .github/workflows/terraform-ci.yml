@@ -78,4 +78,5 @@ jobs:
           name: terraform-lock-${{ matrix.stack }}
           path: terraform/stacks/${{ matrix.stack }}/.terraform.lock.hcl
           if-no-files-found: error
+          include-hidden-files: true
           retention-days: 1
