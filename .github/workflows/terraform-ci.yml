@@ -64,6 +64,18 @@ jobs:
         working-directory: terraform/stacks/${{ matrix.stack }}
         run: terraform init -backend=false -input=false
 
+      - name: Lock provider checksums
+        working-directory: terraform/stacks/${{ matrix.stack }}
+        run: terraform providers lock -platform=linux_amd64 -platform=darwin_amd64 -platform=darwin_arm64
+
       - name: Terraform validate
         working-directory: terraform/stacks/${{ matrix.stack }}
         run: terraform validate -no-color
+
+      - name: Upload provider lock file
+        uses: actions/upload-artifact@v4
+        with:
+          name: terraform-lock-${{ matrix.stack }}
+          path: terraform/stacks/${{ matrix.stack }}/.terraform.lock.hcl
+          if-no-files-found: error
+          retention-days: 1
