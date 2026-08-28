@@ -8,6 +8,10 @@ The long-term project memory and authoritative architecture document is:
 
 - [`docs/PROJECT_BLUEPRINT.md`](docs/PROJECT_BLUEPRINT.md)
 
+The detailed target directory layout across all five repositories is:
+
+- [`docs/architecture/REPOSITORY_LAYOUT.md`](docs/architecture/REPOSITORY_LAYOUT.md)
+
 Snowflake naming rules are in:
 
 - [`docs/standards/NAMING_CONVENTIONS.md`](docs/standards/NAMING_CONVENTIONS.md)
@@ -37,4 +41,4 @@ Architecture decisions are recorded under `docs/adr/`.
 
 ## Current phase
 
-Phase 0: architecture and documentation only. Major infrastructure and data-pipeline implementation has not started.
+Phase 0 is complete. Repository layout is planned before implementation. The next implementation step is the smallest useful Phase 1 NONPROD Terraform foundation; Kafka, Snowpipe Streaming, Openflow and broad dbt modelling remain intentionally deferred.
