@@ -1,6 +1,6 @@
 # Enterprise Snowflake Platform — Project Blueprint
 
-> **Status:** Phase 1 in progress — three-account foundation, organization bootstrap, domain RBAC and workload warehouse model implemented in source; shared apply gated on state + workload identity
+> **Status:** Phase 1 in progress — static Terraform foundation proven; remote state, workload identity and real Snowflake apply remain
 >
 > **Authority:** Canonical architecture memory for the Enterprise Snowflake Platform. Update this file after each meaningful architecture or implementation step.
 >
@@ -124,6 +124,8 @@ PR CI schema pattern inside `CI_<DOMAIN>`:
 PR_<NUMBER>_<LAYER>
 ```
 
+CI databases publish no human-consumer schemas; domain GUEST roles receive no CI database access.
+
 See ADR-019 and `NAMING_CONVENTIONS.md`.
 
 ## 7. RBAC/access model
@@ -225,7 +227,7 @@ terraform/stacks/uat/
 terraform/stacks/prod/
 ```
 
-`organization/` alone uses `ORGADMIN` and manages DEV/UAT/PROD account resources from `config/organization.yml`. The account resources use a bootstrap SERVICE administrator with RSA public-key material supplied outside Git and `prevent_destroy = true`. Normal account roots do not use ORGADMIN.
+`organization/` alone uses `ORGADMIN` and manages DEV/UAT/PROD account resources from `config/organization.yml`. Account resources use a bootstrap SERVICE administrator with RSA public-key material supplied outside Git and `prevent_destroy = true`. Normal account roots do not use ORGADMIN.
 
 Current reusable modules:
 
@@ -236,7 +238,9 @@ platform-control
 rbac
 ```
 
-Terraform CLI `1.16.0` and Snowflake provider `2.19.0` are pinned. Credentials/private keys/state are never committed.
+Terraform CLI `1.16.0` and Snowflake provider `2.19.0` are pinned. Every root commits `.terraform.lock.hcl` with provider checksums for Linux amd64, macOS amd64 and macOS arm64. CI uses lock files read-only.
+
+Credentials, private keys and Terraform state are never committed.
 
 See ADR-021.
 
@@ -440,7 +444,7 @@ Projects do not reimplement generic CI/CD, SCD2, reconciliation, freshness, audi
 ## 29. Implementation roadmap
 
 - **Phase 0 — Architecture:** complete.
-- **Phase 1 — Platform Foundation:** **in progress**; three-account/account-bootstrap/domain-RBAC/warehouse foundation implemented; state/WIF/apply/cost hardening pending.
+- **Phase 1 — Platform Foundation:** **in progress**; static organization/account/domain-RBAC/warehouse foundation is now CI-proven; remote state/WIF/real apply/cost hardening remain.
 - **Phase 2 — Framework Foundation:** metadata validation, dbt package, environment macros, basic loads, reusable CI, operational logging.
 - **Phase 3 — Thin CI/CD spine:** prove DEV -> PR CI -> UAT -> PROD with exact SHA, history/recovery point/cleanup/rollback skeleton.
 - **Phase 4 — Health vertical slice:** deterministic Health RAW -> semantic with contracts/DQ/reconciliation/freshness/recovery/SCD2.
@@ -466,9 +470,12 @@ Projects do not reimplement generic CI/CD, SCD2, reconciliation, freshness, audi
 | ADR-020 | domain GUEST access + workload warehouses | Accepted |
 | ADR-021 | isolated ORGADMIN organization bootstrap | Accepted |
 
-### Phase 1 completed in source control
+### Phase 1 completed in source control / static CI
 
 - [x] Terraform CLI `1.16.0` and Snowflake provider `2.19.0` pinned.
+- [x] `.terraform.lock.hcl` committed for organization/DEV/UAT/PROD with multi-platform checksums.
+- [x] CI enforces lock files with `terraform init -lockfile=readonly`.
+- [x] `terraform fmt`, init and validate successfully execute across all four roots.
 - [x] `config/organization.yml` plus `config/environments/{dev,uat,prod}.yml` implemented.
 - [x] old NONPROD stack/config removed.
 - [x] Organization Terraform root implemented with ORGADMIN isolation and `prevent_destroy`.
@@ -480,18 +487,15 @@ Projects do not reimplement generic CI/CD, SCD2, reconciliation, freshness, audi
 - [x] database -> owning-domain mapping prevents cross-domain database roles.
 - [x] domain `GUEST -> READER -> DEVELOPER -> ADMIN` hierarchy implemented.
 - [x] database `GUEST -> READ -> WRITE -> OWNER` hierarchy implemented.
-- [x] GUEST restricted to configured published schemas (`MARTS`, `SEMANTIC`).
+- [x] GUEST restricted to configured published schemas (`MARTS`, `SEMANTIC`) and receives no CI database access.
 - [x] per-domain QUERY/TRANSFORM warehouses implemented; DEV adds per-domain CI warehouses.
 - [x] DEV developers WRITE; UAT/PROD developers read-only by default.
-- [x] credential-free Terraform CI matrix includes organization/DEV/UAT/PROD.
 - [x] Kafka, Snowpipe Streaming, Openflow and broad dbt remain intentionally deferred.
 
 Still required before Phase 1 exit:
 
-- [ ] get Terraform `fmt/init/validate` actually executing; current GitHub-hosted runner issue still prevents steps from starting;
-- [ ] generate and commit `.terraform.lock.hcl` for each root from a successful init;
 - [ ] choose durable independent remote state for organization/DEV/UAT/PROD;
-- [ ] implement GitHub -> Snowflake WIF/OIDC and least-privilege machine roles;
+- [ ] implement GitHub -> Snowflake WIF/OIDC and least-privilege Terraform/deployment/CI machine roles;
 - [ ] securely execute organization bootstrap or import existing DEV/UAT/PROD accounts;
 - [ ] produce/review/apply DEV plan first and verify Snowflake objects/grants;
 - [ ] prove UAT before enabling protected PROD planning/apply;
@@ -500,13 +504,13 @@ Still required before Phase 1 exit:
 
 ## 31. Next implementation step
 
-Continue Phase 1 in this order:
+Continue Phase 1 with the first real execution spine:
 
-1. resolve/verify Terraform execution and generate lock files;
-2. select/record remote-state backend with independent organization/DEV/UAT/PROD state;
-3. implement WIF/OIDC and dedicated Terraform/deployment/CI machine roles;
-4. execute or import organization accounts under controlled ORGADMIN bootstrap;
-5. add plan-only CI for DEV, review/apply, then verify roles/databases/schemas/warehouses;
+1. select and document a remote-state backend with independent organization/DEV/UAT/PROD state and locking/recovery;
+2. implement WIF/OIDC and dedicated least-privilege Terraform/deployment/CI machine roles;
+3. execute or import the organization accounts under controlled ORGADMIN bootstrap;
+4. add DEV plan-only CI using short-lived identity and remote state;
+5. review/apply DEV and verify roles/databases/schemas/warehouses from Snowflake;
 6. add query-tag and cost-control baseline;
 7. prove UAT; only then enable protected PROD planning/apply;
 8. update this blueprint after each proven step.
