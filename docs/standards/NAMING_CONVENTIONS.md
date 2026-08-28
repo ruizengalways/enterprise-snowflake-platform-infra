@@ -2,86 +2,110 @@
 
 ## Purpose
 
-Define stable naming rules for the Enterprise Snowflake Platform. Physical environment names are configuration-driven; model SQL must not hard-code environment-specific database names.
+Define stable naming rules for the Enterprise Snowflake Platform. Physical targets are configuration-driven; dbt model SQL must not hard-code environment-specific database names.
 
 ## General conventions
 
 - Snowflake objects: uppercase `SNAKE_CASE`.
 - Git repositories and normal source files: lowercase kebab-case unless an ecosystem convention requires otherwise.
-- Names describe capability, workload or ownership—not employee seniority.
-- Avoid technology-specific names in downstream business objects unless the technology itself is the object's purpose.
-- Environment-specific names are resolved from configuration.
-- Any namespace shared by multiple project repositories must include a project discriminator where collisions are possible.
+- Names describe environment, ownership, capability or workload—not employee seniority.
+- Do not encode source technology into downstream business objects unless the technology/source boundary is itself the object's purpose.
+- Environment/account targets are resolved from configuration.
 
-## Accounts and databases
+## Accounts
 
-Architectural accounts:
+Architectural Snowflake accounts:
 
-- `NONPROD`
-- `PROD`
+```text
+DEV
+UAT
+PROD
+```
 
-Analytics databases:
+DEV also hosts ephemeral PR CI. CI is isolated by database/schema/warehouse and later a dedicated workload identity; it is not a fourth Snowflake account.
 
-- `ANALYTICS_DEV`
-- `ANALYTICS_CI`
-- `ANALYTICS_UAT`
-- `ANALYTICS_PROD`
+## Analytics databases
 
-Central control database:
+Pattern:
 
-- `PLATFORM_CONTROL`
+```text
+<ENVIRONMENT>_<PROJECT>
+```
+
+Current examples:
+
+```text
+DEV_HEALTH
+CI_HEALTH
+UAT_HEALTH
+PROD_HEALTH
+
+DEV_TRANSPORT
+CI_TRANSPORT
+UAT_TRANSPORT
+PROD_TRANSPORT
+```
+
+A database represents environment × data-product ownership. Do not create database-per-source merely because a project ingests many MSSQL/MySQL/API/file sources. See ADR-019.
+
+Central control database in every account:
+
+```text
+PLATFORM_CONTROL
+```
 
 ## Schemas
 
-Because analytics databases are shared by multiple project repositories, stable project schemas are project-qualified:
+Because an analytics database is already project-scoped, stable transformation schemas use simple layer names:
 
 ```text
-<PROJECT>_<LAYER>
+STAGING
+INTERMEDIATE
+CANONICAL
+MARTS
+SEMANTIC
 ```
 
-Approved initial layers:
+`CANONICAL` is used only when a distinct canonical layer is justified.
 
-- `STAGING`
-- `INTERMEDIATE`
-- `CANONICAL` when a distinct canonical layer is justified
-- `MARTS`
-- `SEMANTIC`
-
-Examples:
-
-- `HEALTH_STAGING`
-- `HEALTH_INTERMEDIATE`
-- `HEALTH_CANONICAL`
-- `HEALTH_MARTS`
-- `HEALTH_SEMANTIC`
-- `TRANSPORT_STAGING`
-- `TRANSPORT_MARTS`
-
-Personal DEV schemas:
+RAW schemas may identify source purpose when needed, for example:
 
 ```text
-<DEVELOPER>_<PROJECT>_<LAYER>
+RAW_EHR_MSSQL
+RAW_BOOKING_MYSQL
+RAW_INSURANCE_API
 ```
 
-Examples:
+Do not pre-create speculative RAW source schemas in the platform foundation; they are added through project/source onboarding metadata when a real source exists.
 
-- `ALICE_HEALTH_STAGING`
-- `ALICE_HEALTH_INTERMEDIATE`
-- `BOB_TRANSPORT_MARTS`
-
-Ephemeral PR CI schemas:
+Personal DEV schemas inside a project DEV database:
 
 ```text
-<PROJECT>_PR_<NUMBER>_<LAYER>
+<DEVELOPER>_<LAYER>
 ```
 
-Examples:
+Examples inside `DEV_HEALTH`:
 
-- `HEALTH_PR_123_STAGING`
-- `HEALTH_PR_123_MARTS`
-- `TRANSPORT_PR_123_STAGING`
+```text
+ALICE_STAGING
+ALICE_INTERMEDIATE
+ALICE_MARTS
+```
 
-PR numbers are repository-local, so project qualification is mandatory. See ADR-016.
+Ephemeral PR schemas inside a project CI database:
+
+```text
+PR_<NUMBER>_<LAYER>
+```
+
+Examples inside `CI_HEALTH`:
+
+```text
+PR_123_STAGING
+PR_123_MARTS
+```
+
+Project qualification is unnecessary in these schema names because `CI_HEALTH` and `CI_TRANSPORT` are separate databases.
 
 ## Account roles
 
@@ -91,22 +115,26 @@ Pattern:
 AR_<SCOPE>_<CAPABILITY>
 ```
 
-Platform examples:
+Platform roles:
 
-- `AR_PLATFORM_READER`
-- `AR_PLATFORM_ENGINEER`
-- `AR_PLATFORM_ADMIN`
+```text
+AR_PLATFORM_READER
+AR_PLATFORM_ENGINEER
+AR_PLATFORM_ADMIN
+```
 
-Project examples:
+Project roles:
 
-- `AR_HEALTH_READER`
-- `AR_HEALTH_DEVELOPER`
-- `AR_HEALTH_ADMIN`
-- `AR_TRANSPORT_READER`
-- `AR_TRANSPORT_DEVELOPER`
-- `AR_TRANSPORT_ADMIN`
+```text
+AR_HEALTH_READER
+AR_HEALTH_DEVELOPER
+AR_HEALTH_ADMIN
+AR_TRANSPORT_READER
+AR_TRANSPORT_DEVELOPER
+AR_TRANSPORT_ADMIN
+```
 
-Do not use role names such as `JUNIOR`, `SENIOR`, `LEVEL1`, or `LEVEL2`.
+Do not use names such as `JUNIOR`, `SENIOR`, `LEVEL1`, or `LEVEL2`.
 
 ## Database roles
 
@@ -116,19 +144,23 @@ Pattern:
 DR_<PROJECT>_ANALYTICS_<ACCESS>
 ```
 
-Approved initial access suffixes:
+Approved access suffixes:
 
-- `READ`
-- `WRITE`
-- `OWNER`
+```text
+READ
+WRITE
+OWNER
+```
 
 Examples:
 
-- `DR_HEALTH_ANALYTICS_READ`
-- `DR_HEALTH_ANALYTICS_WRITE`
-- `DR_HEALTH_ANALYTICS_OWNER`
+```text
+DR_HEALTH_ANALYTICS_READ
+DR_HEALTH_ANALYTICS_WRITE
+DR_HEALTH_ANALYTICS_OWNER
+```
 
-Database-role names may repeat across different analytics databases because the database itself is part of the database-role identifier.
+Database-role names may repeat in `DEV_HEALTH`, `CI_HEALTH`, `UAT_HEALTH`, and `PROD_HEALTH` because the database is part of the database-role identifier. A project database only receives roles for its owning project.
 
 ## Warehouses
 
@@ -138,67 +170,54 @@ Pattern:
 WH_<SCOPE>_<WORKLOAD>
 ```
 
-For project workloads, `<SCOPE>` is normally the project code because this gives useful cost and workload isolation without multiplying warehouses unnecessarily.
+DEV account examples:
 
-NONPROD examples:
+```text
+WH_HEALTH_DEV
+WH_HEALTH_CI
+WH_TRANSPORT_DEV
+WH_TRANSPORT_CI
+WH_PLATFORM_OPS
+```
 
-- `WH_HEALTH_DEV`
-- `WH_HEALTH_CI`
-- `WH_HEALTH_UAT`
-- `WH_TRANSPORT_DEV`
-- `WH_TRANSPORT_CI`
-- `WH_TRANSPORT_UAT`
-- `WH_PLATFORM_OPS`
+UAT account examples:
+
+```text
+WH_HEALTH_UAT
+WH_TRANSPORT_UAT
+WH_PLATFORM_OPS
+```
 
 PROD examples:
 
-- `WH_HEALTH_TRANSFORM`
-- `WH_HEALTH_QUERY`
-- `WH_TRANSPORT_TRANSFORM`
-- `WH_TRANSPORT_QUERY`
-- `WH_PLATFORM_OPS`
+```text
+WH_HEALTH_TRANSFORM
+WH_HEALTH_QUERY
+WH_TRANSPORT_TRANSFORM
+WH_TRANSPORT_QUERY
+WH_PLATFORM_OPS
+```
 
 Do not add separate warehouses unless workload isolation, security, performance, scheduling, or cost attribution justifies them.
 
 ## Platform control schemas
 
-- `PLATFORM_CONTROL.DEPLOYMENT`
-- `PLATFORM_CONTROL.QUALITY`
-- `PLATFORM_CONTROL.OBSERVABILITY`
-- `PLATFORM_CONTROL.OPERATIONS`
-
-Initial planned tables:
-
 ```text
-DEPLOYMENT.RELEASE_HISTORY
-DEPLOYMENT.DEPLOYMENT_RUNS
-DEPLOYMENT.ROLLBACK_HISTORY
-
-QUALITY.TEST_RUNS
-QUALITY.TEST_RESULTS
-QUALITY.RECONCILIATION_RESULTS
-QUALITY.DATA_INCIDENTS
-
-OBSERVABILITY.DATASET_HEALTH
-OBSERVABILITY.FRESHNESS_STATUS
-OBSERVABILITY.PIPELINE_HEALTH
-OBSERVABILITY.COST_STATUS
-
-OPERATIONS.PIPELINE_RUNS
-OPERATIONS.INCIDENTS
-OPERATIONS.RECOVERY_RUNS
-OPERATIONS.BACKFILL_RUNS
+PLATFORM_CONTROL.DEPLOYMENT
+PLATFORM_CONTROL.QUALITY
+PLATFORM_CONTROL.OBSERVABILITY
+PLATFORM_CONTROL.OPERATIONS
 ```
+
+Initial planned runtime tables are introduced only when a real consumer exists, for example `QUALITY.RECONCILIATION_RESULTS` and deployment/recovery history.
 
 ## Dataset and model names
 
 Dataset identifiers in metadata use lowercase `snake_case` unless a source contract requires otherwise.
 
-Prefer dbt model names that communicate layer and business meaning through directory/package context rather than redundant environment names. Never suffix models with `_DEV`, `_UAT` or `_PROD`.
+Prefer dbt model names that communicate layer and business meaning through directory/package context. Never suffix models with `_DEV`, `_UAT` or `_PROD`.
 
 ## Load strategy identifiers
-
-Approved identifiers:
 
 ```text
 full_refresh
@@ -211,18 +230,18 @@ scd2_stream_task
 
 ## Repositories
 
-Canonical repository names:
+Canonical repositories:
 
-- `enterprise-snowflake-platform-infra`
-- `enterprise-snowflake-data-project-framework`
-- `enterprise-snowflake-demo-source-systems`
-- `enterprise-snowflake-health-analytics`
-- `enterprise-snowflake-transport-analytics`
+```text
+enterprise-snowflake-platform-infra
+enterprise-snowflake-data-project-framework
+enterprise-snowflake-demo-source-systems
+enterprise-snowflake-health-analytics
+enterprise-snowflake-transport-analytics
+```
 
-Future project repositories should normally follow:
+Future project repositories normally follow:
 
 ```text
 enterprise-snowflake-<project>-analytics
 ```
-
-Example: `enterprise-snowflake-finance-analytics`.
