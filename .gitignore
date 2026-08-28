@@ -1,0 +1,39 @@
+# Terraform working directories
+**/.terraform/*
+
+# Terraform state
+*.tfstate
+*.tfstate.*
+
+# Crash logs
+crash.log
+crash.*.log
+
+# Saved plans
+*.tfplan
+tfplan
+
+# Local variable files may contain account-specific values or secrets.
+*.tfvars
+*.tfvars.json
+*.auto.tfvars
+*.auto.tfvars.json
+
+# Local override files
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Snowflake local config / keys
+.snowflake/
+*.p8
+*.pem
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
+
+# Keep dependency lock files committed.
+!.terraform.lock.hcl
