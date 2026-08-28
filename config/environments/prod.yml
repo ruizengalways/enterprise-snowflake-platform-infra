@@ -21,6 +21,9 @@ analytics_databases:
       - CANONICAL
       - MARTS
       - SEMANTIC
+    published_schemas:
+      - MARTS
+      - SEMANTIC
   transport_prod:
     name: PROD_TRANSPORT
     project_code: TRANSPORT
@@ -29,6 +32,9 @@ analytics_databases:
       - STAGING
       - INTERMEDIATE
       - CANONICAL
+      - MARTS
+      - SEMANTIC
+    published_schemas:
       - MARTS
       - SEMANTIC
 
