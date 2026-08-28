@@ -23,12 +23,16 @@ analytics_databases:
       - CANONICAL
       - MARTS
       - SEMANTIC
+    published_schemas:
+      - MARTS
+      - SEMANTIC
   health_ci:
     name: CI_HEALTH
     project_code: HEALTH
     retention_days: 1
     # PR schemas are created/removed by delivery workflows, not Terraform state.
     schemas: []
+    published_schemas: []
   transport_dev:
     name: DEV_TRANSPORT
     project_code: TRANSPORT
@@ -39,11 +43,15 @@ analytics_databases:
       - CANONICAL
       - MARTS
       - SEMANTIC
+    published_schemas:
+      - MARTS
+      - SEMANTIC
   transport_ci:
     name: CI_TRANSPORT
     project_code: TRANSPORT
     retention_days: 1
     schemas: []
+    published_schemas: []
 
 platform_control:
   name: PLATFORM_CONTROL
@@ -54,9 +62,16 @@ platform_control:
     - OBSERVABILITY
     - OPERATIONS
 
+# Account already conveys DEV. Warehouse names therefore describe domain + workload,
+# which makes the same logical workload names reusable across DEV/UAT/PROD accounts.
 warehouses:
-  health_dev:
-    name: WH_HEALTH_DEV
+  health_query:
+    name: WH_HEALTH_QUERY
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
+  health_transform:
+    name: WH_HEALTH_TRANSFORM
     size: XSMALL
     auto_suspend_seconds: 60
     statement_timeout_seconds: 3600
@@ -65,8 +80,13 @@ warehouses:
     size: XSMALL
     auto_suspend_seconds: 60
     statement_timeout_seconds: 1800
-  transport_dev:
-    name: WH_TRANSPORT_DEV
+  transport_query:
+    name: WH_TRANSPORT_QUERY
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
+  transport_transform:
+    name: WH_TRANSPORT_TRANSFORM
     size: XSMALL
     auto_suspend_seconds: 60
     statement_timeout_seconds: 3600
