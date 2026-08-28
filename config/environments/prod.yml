@@ -11,20 +11,26 @@ projects:
     repository: enterprise-snowflake-transport-analytics
 
 analytics_databases:
-  prod:
-    name: ANALYTICS_PROD
+  health_prod:
+    name: PROD_HEALTH
+    project_code: HEALTH
     retention_days: 1
     schemas:
-      - HEALTH_STAGING
-      - HEALTH_INTERMEDIATE
-      - HEALTH_CANONICAL
-      - HEALTH_MARTS
-      - HEALTH_SEMANTIC
-      - TRANSPORT_STAGING
-      - TRANSPORT_INTERMEDIATE
-      - TRANSPORT_CANONICAL
-      - TRANSPORT_MARTS
-      - TRANSPORT_SEMANTIC
+      - STAGING
+      - INTERMEDIATE
+      - CANONICAL
+      - MARTS
+      - SEMANTIC
+  transport_prod:
+    name: PROD_TRANSPORT
+    project_code: TRANSPORT
+    retention_days: 1
+    schemas:
+      - STAGING
+      - INTERMEDIATE
+      - CANONICAL
+      - MARTS
+      - SEMANTIC
 
 platform_control:
   name: PLATFORM_CONTROL
