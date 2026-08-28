@@ -21,6 +21,9 @@ analytics_databases:
       - CANONICAL
       - MARTS
       - SEMANTIC
+    published_schemas:
+      - MARTS
+      - SEMANTIC
   transport_uat:
     name: UAT_TRANSPORT
     project_code: TRANSPORT
@@ -29,6 +32,9 @@ analytics_databases:
       - STAGING
       - INTERMEDIATE
       - CANONICAL
+      - MARTS
+      - SEMANTIC
+    published_schemas:
       - MARTS
       - SEMANTIC
 
@@ -42,13 +48,23 @@ platform_control:
     - OPERATIONS
 
 warehouses:
-  health_uat:
-    name: WH_HEALTH_UAT
+  health_query:
+    name: WH_HEALTH_QUERY
     size: XSMALL
     auto_suspend_seconds: 60
     statement_timeout_seconds: 3600
-  transport_uat:
-    name: WH_TRANSPORT_UAT
+  health_transform:
+    name: WH_HEALTH_TRANSFORM
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
+  transport_query:
+    name: WH_TRANSPORT_QUERY
+    size: XSMALL
+    auto_suspend_seconds: 60
+    statement_timeout_seconds: 3600
+  transport_transform:
+    name: WH_TRANSPORT_TRANSFORM
     size: XSMALL
     auto_suspend_seconds: 60
     statement_timeout_seconds: 3600
