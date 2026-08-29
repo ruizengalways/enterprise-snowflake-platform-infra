@@ -2,7 +2,7 @@
 
 ## Status
 
-Phase 1 executable baseline. Domain human roles, published-data GUEST access, DEV personal workspace permission, machine-only PR CI roles, domain warehouses, and per-account Terraform identities are implemented in Terraform source/static CI. Real Snowflake apply/effective-privilege verification is still pending.
+Phase 1 executable baseline. Domain human roles, published-data GUEST access, DEV personal workspace permission, machine-only PR CI roles, machine-only project deployment roles, domain warehouses, and per-account Terraform/deployment identities are implemented in Terraform source/static CI. Real Snowflake apply/effective-privilege verification is still pending.
 
 ## Principles
 
@@ -13,8 +13,9 @@ Phase 1 executable baseline. Domain human roles, published-data GUEST access, DE
 5. `GUEST` is authenticated published-data read-only access, not Snowflake `PUBLIC`.
 6. UAT/PROD human developers are read-only by default.
 7. `CI_<DOMAIN>` is machine-only; human domain roles do not attach to CI databases.
-8. Terraform manages role/privilege models, not day-to-day employee membership.
-9. Stable Terraform-owned schemas retain platform lifecycle ownership.
+8. Routine UAT/PROD transform compute is machine-only through `AR_<DOMAIN>_DEPLOY`.
+9. Terraform manages role/privilege models, not day-to-day employee membership.
+10. Stable Terraform-owned schemas retain platform lifecycle ownership.
 
 ## Platform human roles
 
@@ -47,6 +48,8 @@ AR_TRANSPORT_GUEST / READER / DEVELOPER / ADMIN
 ```
 
 A person may hold roles in multiple domains, but Health authority never implies Transport authority.
+
+`ADMIN` remains a governed human administration role. In UAT/PROD it does **not** receive permanent transform-warehouse `USAGE` from the baseline. Emergency execution must be granted just-in-time through the enterprise identity-governance/break-glass process and removed afterwards; individual emergency grants are not encoded in Terraform.
 
 ## Stable domain database roles
 
@@ -115,6 +118,7 @@ AR_<DOMAIN>_CI
   -> CI_<DOMAIN>.DR_<DOMAIN>_CI_WORKSPACE
       -> USAGE + CREATE SCHEMA on CI_<DOMAIN>
   -> USAGE on WH_<DOMAIN>_CI
+  -> EXECUTE TASK
 ```
 
 Current examples:
@@ -129,7 +133,7 @@ CI_TRANSPORT.DR_TRANSPORT_CI_WORKSPACE
 WH_TRANSPORT_CI
 ```
 
-These roles are not in the human GUEST -> READER -> DEVELOPER -> ADMIN hierarchy. Human domain roles no longer attach to CI databases.
+These roles are not in the human GUEST -> READER -> DEVELOPER -> ADMIN hierarchy. Human domain roles do not attach to CI databases. A project-specific GitHub OIDC service identity receives the matching `AR_<DOMAIN>_CI` role.
 
 PR schemas follow:
 
@@ -137,7 +141,26 @@ PR schemas follow:
 PR_<NUMBER>_<LAYER>
 ```
 
-The shared framework renders guarded create/drop SQL; a later project-CI GitHub OIDC service identity will receive the matching `AR_<DOMAIN>_CI` role.
+The shared framework renders guarded create/drop SQL. Because the CI role creates the PR schema, schema ownership supplies object-creation authority inside that ephemeral workspace; the account-level `EXECUTE TASK` grant supports warehouse-backed task execution without granting serverless `EXECUTE MANAGED TASK`.
+
+## Project deployment machine roles
+
+Stable DEV/UAT/PROD deployment uses a dedicated machine role per domain:
+
+```text
+SU_GITHUB_<DOMAIN>_DEPLOY
+  -> AR_<DOMAIN>_DEPLOY
+      -> DR_<DOMAIN>_ANALYTICS_WRITE
+      -> USAGE on WH_<DOMAIN>_TRANSFORM
+      -> CREATE STREAM on stable domain schemas
+      -> CREATE TASK on stable domain schemas
+      -> CREATE DYNAMIC TABLE on stable domain schemas
+      -> EXECUTE TASK
+```
+
+`AR_<DOMAIN>_DEPLOY` is intentionally outside the human role hierarchy. The deployment role owns long-lived Snowflake-native runtime objects created by project delivery so Tasks and Dynamic Tables do not depend on a human role retaining background-runtime privileges.
+
+Deployment identities use GitHub OIDC / Snowflake Workload Identity Federation; no password or private key is committed. GitHub deployment workflows are pinned by immutable framework SHA and deploy an explicit full project Git SHA.
 
 ## Warehouse isolation
 
@@ -149,22 +172,25 @@ WH_<DOMAIN>_TRANSFORM
 WH_<DOMAIN>_CI   # DEV only
 ```
 
-Human grants:
+Human baseline grants:
 
 ```text
-GUEST  -> QUERY
-READER -> inherited QUERY
+GUEST         -> QUERY
+READER        -> inherited QUERY
 DEV DEVELOPER -> TRANSFORM
-UAT/PROD ADMIN -> TRANSFORM (transitional until deployment identities exist)
+UAT/PROD human roles -> no permanent TRANSFORM grant
 ```
 
-Machine CI grants:
+Machine grants:
 
 ```text
-AR_<DOMAIN>_CI -> WH_<DOMAIN>_CI
+AR_<DOMAIN>_CI     -> WH_<DOMAIN>_CI      # DEV only
+AR_<DOMAIN>_DEPLOY -> WH_<DOMAIN>_TRANSFORM
 ```
 
-Environment project metadata now identifies the query/transform/CI warehouse keys, so adding a new domain does not require hard-coded Health/Transport role-grant blocks in root Terraform.
+Human UAT/PROD emergency transform execution is a JIT identity-governance action, not a standing Terraform grant.
+
+Environment project metadata identifies the query/transform/CI warehouse keys, so adding a new domain does not require hard-coded Health/Transport role-grant blocks in root Terraform.
 
 ## Employee identity
 
@@ -177,6 +203,8 @@ Employee -> IdP group -> SCIM/approved provisioning -> AR_<DOMAIN>_<CAPABILITY>
 ```
 
 Adding/removing an employee from an existing domain should not require editing Terraform.
+
+Break-glass/JIT access follows the same boundary: identity governance temporarily grants an approved human capability or emergency compute entitlement; Terraform does not add a named employee or permanent UAT/PROD transform grant.
 
 ## Terraform machine identities
 
@@ -199,6 +227,14 @@ MANAGE GRANTS
 
 Routine account roots do not activate ACCOUNTADMIN, SYSADMIN or SECURITYADMIN. Identity bootstrap is the exceptional lifecycle that may use ACCOUNTADMIN to create the dedicated service user/role/WIF trust.
 
+Project workload identities are bootstrapped separately after the environment platform stack has created their target machine roles:
+
+```text
+project-identity/dev  -> SU_GITHUB_<DOMAIN>_CI and SU_GITHUB_<DOMAIN>_DEPLOY
+project-identity/uat  -> SU_GITHUB_<DOMAIN>_DEPLOY
+project-identity/prod -> SU_GITHUB_<DOMAIN>_DEPLOY
+```
+
 ## GitHub OIDC trust
 
 Platform Terraform subjects are repository + GitHub Environment scoped:
@@ -209,6 +245,8 @@ repo:ruizengalways/enterprise-snowflake-platform-infra:environment:uat
 repo:ruizengalways/enterprise-snowflake-platform-infra:environment:prod
 ```
 
+Project workload subjects are also repository + GitHub Environment scoped, but bind to the individual analytics repository so a Health workflow cannot authenticate as a Transport deployment identity.
+
 Each account uses an account-scoped OIDC audience rather than the shared `snowflakecomputing.com` audience.
 
 ## Environment summary
@@ -218,18 +256,21 @@ DEV
   humans: GUEST/READER/DEVELOPER/ADMIN on DEV_<DOMAIN>
   developer: WRITE + CREATE SCHEMA + TRANSFORM
   machines: AR_<DOMAIN>_CI on CI_<DOMAIN> + WH_<DOMAIN>_CI
+            AR_<DOMAIN>_DEPLOY on DEV_<DOMAIN> + WH_<DOMAIN>_TRANSFORM
 
 UAT
   humans: GUEST/READER/DEVELOPER(read-only)/ADMIN
-  admin: TRANSFORM (transitional)
+  machines: AR_<DOMAIN>_DEPLOY on UAT_<DOMAIN> + WH_<DOMAIN>_TRANSFORM
+  emergency human transform: JIT/break-glass only
 
 PROD
   humans: GUEST/READER/DEVELOPER(read-only)/ADMIN
-  admin: TRANSFORM (transitional)
+  machines: AR_<DOMAIN>_DEPLOY on PROD_<DOMAIN> + WH_<DOMAIN>_TRANSFORM
+  emergency human transform: JIT/break-glass only
 ```
 
 ## Verification gate
 
-Static Terraform CI validates provider/resource schemas but not live authorization. The first DEV plan/apply must prove these grants and role relationships in a real Snowflake account before UAT/PROD rollout.
+Static Terraform CI validates provider/resource schemas but not live authorization. The first DEV plan/apply must prove these grants and role relationships in a real Snowflake account before UAT/PROD rollout. Live verification must also prove the deployment service identity can create/own warehouse-backed Streams, Tasks and Dynamic Tables without a human ADMIN transform grant.
 
 See ADR-020, ADR-023, ADR-025 and `TERRAFORM_STATE_AND_IDENTITY.md`.
