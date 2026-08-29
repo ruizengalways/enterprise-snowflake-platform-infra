@@ -2,20 +2,17 @@
 
 ## Purpose
 
-Define stable naming rules for the Enterprise Snowflake Platform. Physical targets are configuration-driven; dbt model SQL must not hard-code environment-specific database names.
+Define stable naming rules for the Enterprise Snowflake Platform. Physical targets are configuration-driven; dbt/model SQL must not hard-code environment-specific database names.
 
 ## General conventions
 
 - Snowflake objects: uppercase `SNAKE_CASE`.
 - Git repositories and normal source files: lowercase kebab-case unless an ecosystem convention requires otherwise.
 - Names describe environment, ownership, capability or workload—not employee seniority.
-- Do not encode source technology into downstream business objects unless the technology/source boundary is itself the object's purpose.
-- Environment/account targets are resolved from configuration.
-- `PROJECT` in generic patterns means the governed data product/domain code, for example `HEALTH` or `TRANSPORT`.
+- Do not encode source technology into downstream business objects unless the source boundary is itself the object's purpose.
+- `PROJECT` / `DOMAIN` means the governed data product code, e.g. `HEALTH` or `TRANSPORT`.
 
 ## Accounts
-
-Architectural Snowflake accounts:
 
 ```text
 DEV
@@ -23,41 +20,38 @@ UAT
 PROD
 ```
 
-DEV also hosts ephemeral PR CI. CI is isolated by database/schema/warehouse and later dedicated project-CI workload identity; it is not a fourth Snowflake account.
+CI is hosted in DEV; it is not a fourth Snowflake account.
 
 ## Analytics databases
 
-Pattern:
-
 ```text
-<ENVIRONMENT>_<PROJECT>
+<ENVIRONMENT>_<DOMAIN>
 ```
 
-Current examples:
+Examples:
 
 ```text
 DEV_HEALTH
 CI_HEALTH
 UAT_HEALTH
 PROD_HEALTH
-
 DEV_TRANSPORT
 CI_TRANSPORT
 UAT_TRANSPORT
 PROD_TRANSPORT
 ```
 
-A database represents environment × data-product ownership. Do not create database-per-source merely because a project ingests many MSSQL/MySQL/API/file sources. See ADR-019.
+A database represents environment × domain, not one physical source.
 
-Central control database in every account:
+Every account also owns:
 
 ```text
 PLATFORM_CONTROL
 ```
 
-## Schemas
+## Stable schemas
 
-Because an analytics database is already project/domain scoped, stable transformation schemas use simple layer names:
+Inside stable domain databases:
 
 ```text
 STAGING
@@ -67,65 +61,81 @@ MARTS
 SEMANTIC
 ```
 
-`CANONICAL` is used only when a distinct canonical layer is justified.
-
-Published/consumer-facing schemas are initially:
+Published schemas initially:
 
 ```text
 MARTS
 SEMANTIC
 ```
 
-These are the only stable layers exposed through the domain `GUEST` role by default.
-
-RAW schemas may identify source purpose when needed, for example:
+RAW source-purpose schemas are added only when a real source is onboarded, for example:
 
 ```text
 RAW_EHR_MSSQL
-RAW_BOOKING_MYSQL
 RAW_INSURANCE_API
 ```
 
-Do not pre-create speculative RAW source schemas in the platform foundation; they are added through project/source onboarding metadata when a real source exists.
+## Personal DEV schemas
 
-Personal DEV schemas inside a project DEV database:
+Inside `DEV_<DOMAIN>`:
 
 ```text
 <DEVELOPER>_<LAYER>
 ```
 
-Examples inside `DEV_HEALTH`:
+Examples:
 
 ```text
-ALICE_STAGING
-ALICE_INTERMEDIATE
-ALICE_MARTS
+DEV_HEALTH.ALICE_SMITH_STAGING
+DEV_HEALTH.ALICE_SMITH_MARTS
 ```
 
-Ephemeral PR schemas inside a project CI database:
+Developer tokens are normalised by the shared framework to uppercase unquoted-identifier-safe characters. This prefix is a workspace namespace, not a per-person security boundary.
+
+## PR CI schemas
+
+Inside `CI_<DOMAIN>`:
 
 ```text
 PR_<NUMBER>_<LAYER>
 ```
 
-Examples inside `CI_HEALTH`:
+Examples:
 
 ```text
-PR_123_STAGING
-PR_123_MARTS
+CI_HEALTH.PR_123_STAGING
+CI_HEALTH.PR_123_MARTS
 ```
 
-Project qualification is unnecessary in these schema names because `CI_HEALTH` and `CI_TRANSPORT` are separate databases.
+PR schemas are transient/reproducible workspaces and are not long-lived Terraform resources.
 
-## Account roles
-
-Pattern:
+## Human account roles
 
 ```text
-AR_<SCOPE>_<CAPABILITY>
+AR_<DOMAIN>_GUEST
+AR_<DOMAIN>_READER
+AR_<DOMAIN>_DEVELOPER
+AR_<DOMAIN>_ADMIN
 ```
 
-Platform roles:
+Capability inheritance:
+
+```text
+GUEST -> READER -> DEVELOPER -> ADMIN
+```
+
+Examples:
+
+```text
+AR_HEALTH_GUEST
+AR_HEALTH_DEVELOPER
+AR_TRANSPORT_GUEST
+AR_TRANSPORT_ADMIN
+```
+
+`GUEST` is authenticated published-data read access, not anonymous/public access.
+
+Platform human roles:
 
 ```text
 AR_PLATFORM_READER
@@ -133,29 +143,9 @@ AR_PLATFORM_ENGINEER
 AR_PLATFORM_ADMIN
 ```
 
-Domain/data-product roles:
+## Machine account roles
 
-```text
-AR_HEALTH_GUEST
-AR_HEALTH_READER
-AR_HEALTH_DEVELOPER
-AR_HEALTH_ADMIN
-
-AR_TRANSPORT_GUEST
-AR_TRANSPORT_READER
-AR_TRANSPORT_DEVELOPER
-AR_TRANSPORT_ADMIN
-```
-
-Capability order is:
-
-```text
-GUEST -> READER -> DEVELOPER -> ADMIN
-```
-
-`GUEST` means read-only consumer access to published layers, not anonymous/public access. Human identity is still authenticated through the enterprise identity model.
-
-Platform Terraform machine roles are environment-scoped rather than domain-scoped:
+Platform Terraform:
 
 ```text
 AR_TERRAFORM_DEV
@@ -163,13 +153,24 @@ AR_TERRAFORM_UAT
 AR_TERRAFORM_PROD
 ```
 
-They are dedicated automation roles and do not participate in the human/domain capability hierarchy.
+PR CI machine capability in DEV:
 
-Do not use names such as `JUNIOR`, `SENIOR`, `LEVEL1`, or `LEVEL2`.
+```text
+AR_<DOMAIN>_CI
+```
+
+Examples:
+
+```text
+AR_HEALTH_CI
+AR_TRANSPORT_CI
+```
+
+Machine roles do not participate in the human domain capability hierarchy.
 
 ## Service users
 
-Machine service-user pattern:
+General machine service-user pattern:
 
 ```text
 SU_<SYSTEM>_<PURPOSE>_<ENVIRONMENT>
@@ -183,19 +184,17 @@ SU_GITHUB_TERRAFORM_UAT
 SU_GITHUB_TERRAFORM_PROD
 ```
 
-These are Snowflake `SERVICE` users trusted through GitHub OIDC workload identity federation. Do not encode a human name into service-user identifiers.
+Project CI/deployment service users will follow a similarly explicit purpose/domain convention when those workload identities are implemented. Do not encode human names into service-user identifiers.
 
-Project CI/deployment service-user naming will follow the same convention only when those lifecycles are implemented.
+## Stable database roles
 
-## Database roles
-
-Pattern:
+Stable human database-role pattern:
 
 ```text
-DR_<PROJECT>_ANALYTICS_<ACCESS>
+DR_<DOMAIN>_ANALYTICS_<ACCESS>
 ```
 
-Approved access suffixes:
+Approved access values:
 
 ```text
 GUEST
@@ -204,44 +203,46 @@ WRITE
 OWNER
 ```
 
+Example:
+
+```text
+DEV_HEALTH.DR_HEALTH_ANALYTICS_WRITE
+```
+
+Human stable database roles are not created in `CI_<DOMAIN>` databases.
+
+## CI database role
+
+Machine-only PR workspace role:
+
+```text
+CI_<DOMAIN>.DR_<DOMAIN>_CI_WORKSPACE
+```
+
 Examples:
 
 ```text
-DR_HEALTH_ANALYTICS_GUEST
-DR_HEALTH_ANALYTICS_READ
-DR_HEALTH_ANALYTICS_WRITE
-DR_HEALTH_ANALYTICS_OWNER
+CI_HEALTH.DR_HEALTH_CI_WORKSPACE
+CI_TRANSPORT.DR_TRANSPORT_CI_WORKSPACE
 ```
 
-`GUEST` receives database `USAGE`, published-schema `USAGE`, and `SELECT` on current/future tables, views and semantic views only in the configured published schemas. `READ` covers all stable domain schemas. Database-role names may repeat in `DEV_HEALTH`, `CI_HEALTH`, `UAT_HEALTH`, and `PROD_HEALTH` because the database is part of the database-role identifier. A project database only receives roles for its owning project.
+It grants database `USAGE` + `CREATE SCHEMA` to `AR_<DOMAIN>_CI`.
 
 ## Warehouses
-
-Pattern:
 
 ```text
 WH_<DOMAIN>_<WORKLOAD>
 ```
 
-The Snowflake account already identifies DEV/UAT/PROD, so normal workload warehouse names do not repeat the environment.
-
 Per-domain baseline:
 
 ```text
-WH_HEALTH_QUERY
-WH_HEALTH_TRANSFORM
-WH_TRANSPORT_QUERY
-WH_TRANSPORT_TRANSFORM
+WH_<DOMAIN>_QUERY
+WH_<DOMAIN>_TRANSFORM
+WH_<DOMAIN>_CI   # DEV only
 ```
 
-DEV additionally hosts PR CI compute:
-
-```text
-WH_HEALTH_CI
-WH_TRANSPORT_CI
-```
-
-Platform operations use:
+Platform operations:
 
 ```text
 WH_PLATFORM_OPS
@@ -249,13 +250,41 @@ WH_PLATFORM_OPS
 
 Access intent:
 
-- domain `GUEST` receives the domain `QUERY` warehouse;
-- `READER` inherits `GUEST`, so it can query without a duplicate grant;
-- DEV `DEVELOPER` additionally receives the domain `TRANSFORM` warehouse;
-- UAT/PROD human `ADMIN` currently receives `TRANSFORM` until project deployment identity replaces human deployment access;
-- CI warehouses are reserved for dedicated project CI workload identities, not ordinary human roles.
+```text
+GUEST/READER       -> QUERY
+DEV DEVELOPER      -> TRANSFORM
+UAT/PROD ADMIN     -> TRANSFORM (transitional)
+AR_<DOMAIN>_CI     -> CI
+```
 
-Do not add separate warehouses unless workload isolation, security, performance, scheduling, or cost attribution justifies them.
+Environment project metadata identifies each domain's warehouse keys; root Terraform should not hard-code Health/Transport grant blocks.
+
+## Query tags
+
+`QUERY_TAG` is compact JSON rather than a Snowflake object identifier. Standard keys are lowercase:
+
+```text
+project
+environment
+workload
+source
+pipeline
+dataset
+run_id
+git_sha
+pr_number
+operation
+```
+
+Required keys are `project`, `environment`, `workload`.
+
+Example:
+
+```json
+{"dataset":"patient","environment":"ci","pr_number":123,"project":"health","workload":"pr_ci"}
+```
+
+Do not place personal, secret, regulated or business payload data in query tags.
 
 ## Platform control schemas
 
@@ -266,13 +295,11 @@ PLATFORM_CONTROL.OBSERVABILITY
 PLATFORM_CONTROL.OPERATIONS
 ```
 
-Initial planned runtime tables are introduced only when a real consumer exists, for example `QUALITY.RECONCILIATION_RESULTS` and deployment/recovery history.
+Runtime tables/views are introduced only when a real consumer/lifecycle exists.
 
-## Dataset and model names
+## Dataset/model names
 
-Dataset identifiers in metadata use lowercase `snake_case` unless a source contract requires otherwise.
-
-Prefer dbt model names that communicate layer and business meaning through directory/package context. Never suffix models with `_DEV`, `_UAT` or `_PROD`.
+Dataset metadata uses lowercase `snake_case` unless a source contract requires otherwise. Never suffix dbt models with `_DEV`, `_UAT` or `_PROD`.
 
 ## Load strategy identifiers
 
@@ -287,8 +314,6 @@ scd2_stream_task
 
 ## Repositories
 
-Canonical repositories:
-
 ```text
 enterprise-snowflake-platform-infra
 enterprise-snowflake-data-project-framework
@@ -300,5 +325,5 @@ enterprise-snowflake-transport-analytics
 Future project repositories normally follow:
 
 ```text
-enterprise-snowflake-<project>-analytics
+enterprise-snowflake-<domain>-analytics
 ```
