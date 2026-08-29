@@ -4,24 +4,24 @@ Central platform-engineering repository for the Enterprise Snowflake reference p
 
 ## Start here
 
-For a new conversation/session:
+For a new conversation/session, read in this order:
 
-1. [`docs/CURRENT_CONTEXT.md`](docs/CURRENT_CONTEXT.md) — current implementation state, verified CI runs, blockers and next actions.
+1. [`docs/CURRENT_CONTEXT.md`](docs/CURRENT_CONTEXT.md) — current implementation state, verified CI, blockers and next actions.
 2. [`docs/PROJECT_BLUEPRINT.md`](docs/PROJECT_BLUEPRINT.md) — canonical long-term architecture.
 3. [`docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md`](docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md)
-4. [`docs/architecture/RBAC_MODEL.md`](docs/architecture/RBAC_MODEL.md)
-5. [`docs/architecture/REPOSITORY_LAYOUT.md`](docs/architecture/REPOSITORY_LAYOUT.md)
-6. [`docs/standards/TERRAFORM_STANDARDS.md`](docs/standards/TERRAFORM_STANDARDS.md)
-7. [`docs/standards/COST_ATTRIBUTION.md`](docs/standards/COST_ATTRIBUTION.md)
+4. [`docs/architecture/ACCOUNT_TOPOLOGY.md`](docs/architecture/ACCOUNT_TOPOLOGY.md)
+5. [`docs/architecture/RBAC_MODEL.md`](docs/architecture/RBAC_MODEL.md)
+6. [`docs/architecture/REPOSITORY_LAYOUT.md`](docs/architecture/REPOSITORY_LAYOUT.md)
+7. [`docs/standards/TERRAFORM_STANDARDS.md`](docs/standards/TERRAFORM_STANDARDS.md)
 8. [`docs/runbooks/terraform-platform-bootstrap.md`](docs/runbooks/terraform-platform-bootstrap.md)
 
 Architecture decisions are under `docs/adr/`.
 
 ## Responsibility
 
-This repo owns stable Snowflake platform/account infrastructure: organization/account bootstrap, domain databases/schemas, RBAC, warehouses, Terraform/project machine identities, remote-state adapter contract, workspace permission boundaries, cost/control/governance foundations and `PLATFORM_CONTROL` structure.
+This repo owns stable Snowflake platform/account infrastructure: organization/account bootstrap, domain databases/schemas, RBAC, warehouses, Terraform and project workload identities, remote-state adapter contracts, workspace/deployment permission boundaries, cost/governance foundations and structural `PLATFORM_CONTROL` lifecycle.
 
-It does not own domain business SQL, dbt models, source simulation or day-to-day employee identity membership.
+It does not own domain business SQL, dbt models, source simulation, ingestion producer code or day-to-day employee identity membership.
 
 ## Current Terraform shape
 
@@ -41,20 +41,32 @@ terraform/
     ├── organization/
     ├── identity/{dev,uat,prod}/
     ├── dev/
-    ├── project-identity/dev/
     ├── uat/
-    └── prod/
+    ├── prod/
+    └── project-identity/{dev,uat,prod}/
 ```
 
-There are eight independent state/lifecycle boundaries: organization, three platform identities, three platform account states, and DEV project-CI identity.
-
-Execution order in DEV:
+There are ten independent state/lifecycle boundaries:
 
 ```text
 organization
--> identity/dev
--> platform/dev
--> project-identity/dev
+identity/dev
+identity/uat
+identity/prod
+platform/dev
+platform/uat
+platform/prod
+project-identity/dev
+project-identity/uat
+project-identity/prod
+```
+
+Per-environment dependency is:
+
+```text
+identity/<env>
+  -> platform/<env>
+      -> project-identity/<env>
 ```
 
 ## State backend
@@ -66,99 +78,80 @@ azurerm -> Azure Blob Storage (Microsoft-first reference)
 s3      -> Amazon S3 (AWS alternative)
 ```
 
-OneDrive/SharePoint is for human-facing documents/evidence, not live Terraform state.
+One deployment uses one authoritative writable backend. OneDrive/SharePoint is for human-facing documents/evidence, not live Terraform state.
 
-## Human access
+## Human and machine access
+
+Human domain hierarchy:
 
 ```text
 AR_<DOMAIN>_GUEST -> READER -> DEVELOPER -> ADMIN
 DR_<DOMAIN>_ANALYTICS_GUEST -> READ -> WRITE -> OWNER
 ```
 
-Employees receive roles through enterprise IdP/SCIM. Terraform defines the model, not employee membership.
+Employees receive roles through enterprise IdP/SCIM. Terraform defines the permission model, not employee membership.
 
-## DEV workspace access
-
-Personal namespace:
+Machine roles are separate:
 
 ```text
-DEV_<DOMAIN>.<DEVELOPER>_<LAYER>
+AR_<DOMAIN>_CI       # DEV PR workspace lifecycle only
+AR_<DOMAIN>_DEPLOY   # stable DEV/UAT/PROD project delivery
 ```
 
-CI is machine-only:
+UAT/PROD human roles receive no permanent transform warehouse grant in the baseline. Emergency manual execution is JIT/break-glass through enterprise identity governance.
+
+## Project workload identities
+
+DEV PR CI:
 
 ```text
-SU_GITHUB_<DOMAIN>_CI
-  -> AR_<DOMAIN>_CI
-      -> CI_<DOMAIN>.DR_<DOMAIN>_CI_WORKSPACE
-      -> CREATE SCHEMA on CI_<DOMAIN>
-      -> WH_<DOMAIN>_CI
+SU_GITHUB_<DOMAIN>_CI -> AR_<DOMAIN>_CI
 ```
 
-Current source identities:
+Stable project delivery in DEV/UAT/PROD:
 
 ```text
-SU_GITHUB_HEALTH_CI
-SU_GITHUB_TRANSPORT_CI
+SU_GITHUB_<DOMAIN>_DEPLOY -> AR_<DOMAIN>_DEPLOY
 ```
 
-Their GitHub OIDC subjects are pinned to each project repository + Environment `ci`.
+All project workload identities use GitHub OIDC + Snowflake Workload Identity Federation with repository + GitHub Environment scoped subjects and an account-scoped audience.
 
-## Reusable project PR workflow
+## Reusable project workflows
 
-The framework repo now provides a pinned reusable PR workspace workflow. Health and Transport contain thin callers.
+The framework repo owns reusable PR workspace and stable project deployment workflows. Health and Transport contain thin callers pinned to an immutable framework SHA.
+
+PR workspace lifecycle:
 
 ```text
 PR opened/reopened/synchronize -> create PR_<n>_* transient schemas
-PR closed                      -> drop PR_<n>_* schemas
+PR closed                      -> guarded drop of PR_<n>_* schemas
 ```
 
-The workflow requests a short-lived GitHub token using the Snowflake **account-scoped** OIDC audience and authenticates with the domain CI service identity. It currently executes only framework-generated workspace SQL, not arbitrary PR business code.
+Stable deployment requires a full project Git SHA and full framework Git SHA. The reusable workflow verifies the target project commit belongs to `main` history, checks out the exact revision, verifies the project dbt package pin matches the framework revision, and targets the selected protected GitHub Environment.
 
-## Framework metadata contracts
-
-The data-project framework now has versioned schemas + validation for:
+Promotion is therefore:
 
 ```text
-project metadata
-dataset technical metadata
-RAW contract metadata
+same project SHA
+DEV -> UAT -> PROD
 ```
 
-Dataset metadata can declare approved load strategy, standard/custom implementation, keys/watermark/freshness/reconciliation. RAW contracts describe source/entity/grain/columns/CDC/breaking-change policy.
+No environment branches are used.
 
-Business joins/calculations/arbitrary SQL are intentionally outside metadata.
+## Platform and framework status
 
-See ADR-028.
+Source/static CI currently proves:
 
-## Cost attribution
-
-```text
-domain storage              -> <ENVIRONMENT>_<DOMAIN>
-compute                     -> WH_<DOMAIN>_<WORKLOAD>
-query execution attribution -> QUERY_TAG + QUERY_ATTRIBUTION_HISTORY
-warehouse idle compute      -> WAREHOUSE_METERING_HISTORY
-serverless/ingestion        -> service-specific usage histories
-```
-
-Baseline SQL: `snowflake/monitoring/queries/cost_attribution.sql`.
-
-## Current phase
-
-**Phase 1 — Platform Foundation is in progress.**
-
-Source/static-CI proven:
-
-- organization / platform identity / account roots;
+- organization, platform identity, platform account and project-identity Terraform roots;
 - Azure Blob + S3 backend adapters;
-- domain human RBAC and warehouses;
-- DEV personal workspace + machine-only CI boundaries;
-- DEV project CI WIF identity root;
-- framework workspace/query-tag utilities;
-- framework project/dataset/RAW metadata schemas + validator;
-- pinned reusable Health/Transport PR workspace workflows;
-- Snowflake-native cost-attribution query baseline.
+- domain human RBAC, PR-CI roles and stable deployment roles;
+- DEV personal/PR workspace permission boundaries;
+- project CI/deployment WIF identity source;
+- metadata/capture/checkpoint/quality/SCD primitives;
+- deterministic offline SCD2 behavior oracle;
+- reusable PR workspace and immutable project deployment workflows;
+- query-tag/cost-attribution baseline.
 
-Still requires live infrastructure: remote state, Snowflake account bootstrap/import, identity/dev + platform/dev apply, project-identity/dev apply, GitHub Environment `ci` configuration, real PR workspace lifecycle test, then UAT/PROD.
+This is not live Snowflake proof. Real remote state, account bootstrap/import, Terraform apply, WIF authentication, PR workspace execution, project deployment and live SCD2 execution are still pending.
 
-Kafka, Snowpipe Streaming and Openflow remain intentionally deferred.
+Kafka Connector, direct Snowpipe Streaming and Openflow remain intentionally deferred until the live DEV foundation is proven.
