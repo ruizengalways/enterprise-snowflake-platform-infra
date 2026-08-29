@@ -1,7 +1,7 @@
 # ADR-031 — Reusable Capture Archetypes and Dynamic Table Fallback
 
-- Status: Accepted
-- Date: 2026-08-29
+- **Status:** Accepted
+- **Date:** 2026-08-29
 
 ## Context
 
@@ -47,7 +47,7 @@ inferred_snapshot_diff
 source_defined
 ```
 
-The framework must not claim a stronger Silver history than the source fidelity supports.
+The framework must not claim a stronger downstream history than the source fidelity supports.
 
 Examples:
 
@@ -56,9 +56,9 @@ Examples:
 - full CDC/event input can support complete ordered SCD2 when the ordering key is reliable;
 - full snapshot can infer deletes only when consecutive snapshots are retained and compared.
 
-### 3. Bronze is replayable evidence first, current projection second
+### 3. RAW/Bronze is replayable evidence first, current projection second
 
-For sources where history, delete inference, reconciliation, recovery or replay matter, the authoritative Bronze object is append/replayable evidence.
+For sources where history, delete inference, reconciliation, recovery or replay matter, the authoritative RAW/Bronze object is append/replayable evidence.
 
 A full snapshot must therefore retain snapshot batches, for example:
 
@@ -71,9 +71,9 @@ record_hash
 <business columns>
 ```
 
-A current-state `MERGE`/replace table may exist as a projection, but it must not be the only copy when downstream SCD2 or snapshot-diff semantics are required.
+A current-state MERGE/replace table may exist as a projection, but it must not be the only copy when downstream SCD2 or snapshot-diff semantics are required.
 
-For full CDC/events, the authoritative Bronze table is append-only source events. Snowflake Streams are consumers of this evidence, not substitutes for the evidence itself.
+For full CDC/events, the authoritative RAW table is append-only source events. Snowflake Streams are consumers of this evidence, not substitutes for the evidence itself.
 
 ### 4. Classic Snowflake execution is the mandatory baseline
 
@@ -101,7 +101,9 @@ Rules:
 - use Dynamic Tables primarily for SELECT-defined current projections, filtering, joins and aggregations;
 - use classic Streams/Tasks for procedural MERGE/delete logic, strict orchestration, explicit retry/checkpoint handling and workloads where Dynamic Table incremental refresh is unstable or expensive;
 - do not treat a Stream on a Dynamic Table as full audit history;
-- maintain equivalent contract tests for the classic and Dynamic Table implementations where both exist.
+- maintain equivalent contract tests for classic/Dynamic Table alternatives where both exist.
+
+Dynamic Tables are not the canonical SCD2 implementation. Current framework code exposes an SCD1 Dynamic Table wrapper but no SCD2 Dynamic Table wrapper.
 
 ### 6. Retry/lookback/checkpoint state is explicit runtime state
 
@@ -120,7 +122,7 @@ last_successful_batch_id
 updated_at
 ```
 
-The authoritative runtime tables live under the account `PLATFORM_CONTROL` lifecycle when the implementation is introduced.
+The authoritative runtime implementation lives under account-local `PLATFORM_CONTROL.OPERATIONS`; do not mirror Snowflake-owned Stream offsets into that table.
 
 ### 7. Idempotency is source-specific but contract-driven
 
@@ -129,28 +131,28 @@ The framework supports bounded technical parameters, not arbitrary orchestration
 Typical idempotency identities:
 
 ```text
-watermark/current rows    -> business key + source version/timestamp
-net CDC                   -> source position + business key
-full CDC / transaction log-> LSN/SCN/sequence/event id
-Kafka/Debezium            -> topic + partition + offset
-Delta CDF                 -> commit version + row identity
-business event            -> event id or source offset
-snapshot                  -> snapshot id + business key
-file                      -> file path/content key + row number or source key
-API                       -> cursor + business/event key
+watermark/current rows     -> business key + source version/timestamp
+net CDC                    -> source position + business key
+full CDC / transaction log -> LSN/SCN/sequence/event id
+Kafka/Debezium             -> topic + partition + offset
+Delta CDF                  -> commit version + row identity
+business event             -> event id or source offset
+snapshot                   -> snapshot id + business key
+file                       -> file path/content key + row number or source key
+API                        -> cursor + business/event key
 ```
 
 ## Canonical mapping
 
-| Source shape | Archetype | Authoritative Bronze | Delete fidelity | SCD1 | SCD2 fidelity |
+| Source shape | Archetype | Authoritative RAW evidence | Delete fidelity | SCD1 | SCD2 fidelity |
 |---|---|---|---|---|---|
 | Full snapshot | snapshot | append snapshot batches | inferred by diff | yes | snapshot-grain |
-| Incremental watermark | watermark | append observed versions or merge current + retained evidence | normally none | yes | observed changes only |
+| Incremental watermark | watermark | append observed versions or current projection + retained evidence | normally none | yes | observed changes only |
 | Watermark + lookback | watermark | same, with overlap dedupe | normally none | yes | observed changes only |
 | Watermark + tombstone | net_change | append observations/tombstones, optional current projection | explicit tombstone | yes | observed changes |
 | Native CDC net changes | net_change | append each capture batch before current merge | explicit delete | yes | batch/net history |
 | Native CDC full changes | full_change | append ordered CDC events | explicit delete | yes | full when ordering reliable |
-| Transaction log CDC | full_change | append log events | explicit delete | yes | full when ordering reliable |
+| Transaction log CDC | full_change | append log events | explicit delete | yes | full when log ordering reliable |
 | Debezium/Kafka CDC | full_change | append ordered events | explicit/source defined | yes | full when ordering reliable |
 | Delta CDF | full_change | append commit changes | explicit/source defined | yes | full when commit ordering reliable |
 | Business event source | full_change | append immutable events | source defined | yes | full event history |
@@ -166,31 +168,32 @@ API                       -> cursor + business/event key
 - downstream design is independent of SQL Server/Kafka/Delta/API/file transport choice;
 - source fidelity limits are explicit and testable;
 - Dynamic Table problems do not force a platform rewrite;
-- replay/recovery and delete inference remain possible because Bronze evidence is retained;
+- replay/recovery and delete inference remain possible because RAW evidence is retained;
 - full CDC history is not accidentally destroyed by merging too early.
 
 ### Trade-offs
 
-- replayable Bronze can consume more storage than current-state-only tables;
+- replayable RAW can consume more storage than current-state-only tables;
 - snapshot sources require retention policy and snapshot identifiers;
-- classic and Dynamic Table dual implementations increase framework test surface;
+- classic/Dynamic Table alternatives increase framework test surface;
 - some source-specific checkpoint and ordering details remain explicit project configuration by design.
 
-## Implementation direction
+## Implementation status — 2026-08-29
 
-Framework growth should add:
+The planned baseline from this ADR is now implemented in source/static CI rather than remaining future work:
 
 ```text
 capture contract/schema + semantic validation
-Bronze append/current projection primitives
-snapshot diff primitive
-watermark/lookback dedupe primitive
-net-change merge primitive
-full-change ordered event primitive
-SCD1 consumer primitive
-SCD2 snapshot/merge/stream-task implementations
-classic + Dynamic Table compatibility tests
-checkpoint/reconciliation/freshness/audit control primitives
+snapshot/watermark/net-change/full-change helpers
+snapshot diff and current-state merge primitives
+checkpoint/run/check-result control primitives
+freshness/reconciliation helpers
+SCD1 consumer primitives
+SCD2 snapshot/merge/stream-task primitives
+SCD2 invariants + deterministic behavior oracle
+classic + optional Dynamic Table projection support
 ```
 
-Dynamic Tables remain optional throughout.
+The mutable checkpoint runtime is implemented structurally under `PLATFORM_CONTROL.OPERATIONS`. Live Snowflake execution, performance, recovery and production operations remain unproven until the DEV control plane is bootstrapped.
+
+SCD consumer correctness/fidelity semantics are refined by ADR-035.
