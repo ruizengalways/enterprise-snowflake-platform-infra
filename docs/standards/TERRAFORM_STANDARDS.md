@@ -11,14 +11,14 @@ Terraform CLI                 1.16.0
 Snowflake Terraform provider  2.19.0
 ```
 
-- Every root pins Terraform/provider versions.
+- Every Terraform root pins Terraform/provider versions.
 - Every root commits `.terraform.lock.hcl`.
-- CI uses `terraform init -lockfile=readonly`.
-- Provider upgrades require migration-guide review and CI validation.
+- CI uses `terraform init -backend=false -input=false -lockfile=readonly` for static validation.
+- Provider upgrades require migration-guide review and full static CI validation before live plans.
 
 ## Credential rule
 
-Never commit passwords, private keys, OAuth/OIDC tokens, cloud access keys, PATs, Terraform state or real secret-bearing tfvars.
+Never commit passwords, private keys, OAuth/OIDC tokens, cloud access keys, PATs, Terraform state or secret-bearing real tfvars.
 
 ## Terraform lifecycle roots
 
@@ -30,18 +30,21 @@ terraform/stacks/identity/dev/
 terraform/stacks/identity/uat/
 terraform/stacks/identity/prod/
 terraform/stacks/dev/
-terraform/stacks/project-identity/dev/
 terraform/stacks/uat/
 terraform/stacks/prod/
+terraform/stacks/project-identity/dev/
+terraform/stacks/project-identity/uat/
+terraform/stacks/project-identity/prod/
 ```
 
-They represent eight independent state/lifecycle boundaries.
+They represent ten independent state/lifecycle boundaries.
 
 ### Organization root
 
 - the only root using ORGADMIN;
 - creates/imports DEV/UAT/PROD account resources;
-- account resources use `prevent_destroy`.
+- account lifecycle receives destructive-change protection;
+- never run routine account infrastructure through this root.
 
 ### Platform identity roots
 
@@ -57,14 +60,7 @@ Routine account Terraform must never own the identity it uses to authenticate.
 
 ### Routine account roots
 
-`dev/uat/prod` use provider aliases:
-
-```text
-snowflake.objects
-snowflake.security
-```
-
-Both activate:
+`dev/uat/prod` activate only:
 
 ```text
 AR_TERRAFORM_<ENV>
@@ -79,21 +75,28 @@ CREATE WAREHOUSE
 MANAGE GRANTS
 ```
 
-Do not fall back to ACCOUNTADMIN/SYSADMIN/SECURITYADMIN for routine CI. Add privileges only when a live plan/apply demonstrates a specific requirement.
+Do not fall back to ACCOUNTADMIN/SYSADMIN/SECURITYADMIN for routine CI. Add privileges only when a live plan/apply demonstrates a specific missing requirement.
 
-### Project identity root
+Routine roots own stable domain databases/schemas, warehouses, role models, grants and structural `PLATFORM_CONTROL` boundaries.
 
-`project-identity/dev` executes only **after** `platform/dev` because it binds service users to CI roles created by platform state.
+### Project identity roots
 
-It creates:
+`project-identity/<env>` executes only **after** `platform/<env>` because it binds service users to machine roles created by platform state.
+
+DEV creates:
 
 ```text
-SU_GITHUB_<DOMAIN>_CI -> existing AR_<DOMAIN>_CI
+SU_GITHUB_<DOMAIN>_CI     -> existing AR_<DOMAIN>_CI
+SU_GITHUB_<DOMAIN>_DEPLOY -> existing AR_<DOMAIN>_DEPLOY
 ```
 
-using the generic `service-identity` module.
+UAT/PROD create:
 
-It must not create/expand project CI roles or receive account-level privileges. UAT/PROD deployment identities are future separate lifecycles; do not reuse DEV CI identities.
+```text
+SU_GITHUB_<DOMAIN>_DEPLOY -> existing AR_<DOMAIN>_DEPLOY
+```
+
+The generic `service-identity` module owns only SERVICE user/WIF trust + role assignment. It must not create/expand the target role or grant account-level privileges.
 
 ## State backend adapters
 
@@ -114,7 +117,7 @@ This writes ignored `backend.generated.tf` from `terraform/backend-profiles/`.
 
 ### Azure Blob
 
-Prefer GitHub OIDC -> Microsoft Entra workload federation. Baseline data-plane permission is `Storage Blob Data Contributor` scoped to the state container. Avoid client secrets.
+Prefer GitHub OIDC -> Microsoft Entra workload federation. Baseline data-plane permission is `Storage Blob Data Contributor` scoped to the state container. Avoid client secrets for new automation.
 
 ### S3
 
@@ -132,9 +135,11 @@ enterprise-snowflake-platform-infra/identity/dev/terraform.tfstate
 enterprise-snowflake-platform-infra/identity/uat/terraform.tfstate
 enterprise-snowflake-platform-infra/identity/prod/terraform.tfstate
 enterprise-snowflake-platform-infra/platform/dev/terraform.tfstate
-enterprise-snowflake-platform-infra/project-identity/dev/terraform.tfstate
 enterprise-snowflake-platform-infra/platform/uat/terraform.tfstate
 enterprise-snowflake-platform-infra/platform/prod/terraform.tfstate
+enterprise-snowflake-platform-infra/project-identity/dev/terraform.tfstate
+enterprise-snowflake-platform-infra/project-identity/uat/terraform.tfstate
+enterprise-snowflake-platform-infra/project-identity/prod/terraform.tfstate
 ```
 
 Never keep Azure Blob and S3 simultaneously writable for the same state.
@@ -143,7 +148,7 @@ Never keep Azure Blob and S3 simultaneously writable for the same state.
 
 Use repository + GitHub Environment scoped subjects.
 
-Platform:
+Platform Terraform:
 
 ```text
 repo:ruizengalways/enterprise-snowflake-platform-infra:environment:dev
@@ -151,14 +156,16 @@ repo:ruizengalways/enterprise-snowflake-platform-infra:environment:uat
 repo:ruizengalways/enterprise-snowflake-platform-infra:environment:prod
 ```
 
-Project CI:
+Project PR CI:
 
 ```text
 repo:ruizengalways/enterprise-snowflake-health-analytics:environment:ci
 repo:ruizengalways/enterprise-snowflake-transport-analytics:environment:ci
 ```
 
-Use a non-empty **account-scoped** Snowflake OIDC audience. Do not use `snowflakecomputing.com` for these identities.
+Project stable deployment follows the same repository boundary with target environments `dev`, `uat`, `prod`.
+
+Use a non-empty account-scoped Snowflake OIDC audience. Do not use the shared `snowflakecomputing.com` audience for these workload identities.
 
 Snowflake provider experiment `USER_ENABLE_DEFAULT_WORKLOAD_IDENTITY` is limited to roots that manage service-user WIF configuration.
 
@@ -178,12 +185,12 @@ service-identity
 
 Rules:
 
-- `analytics-environment` owns stable domain DB/schema structure;
-- `rbac` owns stable human domain/platform roles and grants;
+- `analytics-environment` owns stable domain database/schema structure;
+- `rbac` owns stable human, CI and deployment role/grant models;
 - `workspace-access` owns DEV `CREATE SCHEMA` + machine CI role/database-role/warehouse boundary;
 - `workload-identity` creates a platform Terraform role plus service identity;
 - `service-identity` binds a WIF service user to an already-existing role;
-- do not create wrapper modules that hide a single line or real business differences.
+- do not create wrapper modules that hide a single line or genuinely different business/source behavior.
 
 A database has one owning domain; never recreate a domain × database Cartesian product.
 
@@ -194,12 +201,14 @@ Terraform defines the RBAC model, not employee membership.
 ```text
 Entra / Okta group
   -> SCIM / approved provisioning
-      -> AR_<DOMAIN>_<CAPABILITY>
+  -> AR_<DOMAIN>_<CAPABILITY>
 ```
 
 Employee joins/leaves must not create routine Terraform changes.
 
-## Human and CI database boundary
+Emergency UAT/PROD transform access is also an identity-governance/JIT event, not a permanent Terraform grant to named employees.
+
+## Human, CI and deployment boundaries
 
 Human domain roles attach to stable environment databases only.
 
@@ -217,13 +226,28 @@ AR_<DOMAIN>_CI
   -> CI_<DOMAIN>.DR_<DOMAIN>_CI_WORKSPACE
   -> CREATE SCHEMA on CI_<DOMAIN>
   -> WH_<DOMAIN>_CI
+  -> EXECUTE TASK
 ```
 
-Do not attach human GUEST/READER/DEVELOPER/ADMIN roles to CI databases.
+Stable project deployment:
+
+```text
+AR_<DOMAIN>_DEPLOY
+  -> DR_<DOMAIN>_ANALYTICS_WRITE
+  -> WH_<DOMAIN>_TRANSFORM
+  -> CREATE STREAM/TASK/DYNAMIC TABLE on stable domain schemas
+  -> EXECUTE TASK
+```
+
+Do not grant `EXECUTE MANAGED TASK` while the baseline uses named warehouses.
+
+Do not attach human GUEST/READER/DEVELOPER/ADMIN roles to CI databases. Do not grant permanent UAT/PROD transform compute to human roles in the baseline.
 
 ## Resource ownership
 
 Terraform owns selected stable infrastructure/RBAC/identity boundaries. It does not own dbt business models, employee records, individual PR schemas or routine data changes.
+
+Terraform creates the structural `PLATFORM_CONTROL` database/schemas; native platform SQL owns operational tables/procedures inside that boundary. Do not use `null_resource`/`local-exec` to make Terraform own those SQL objects.
 
 One object has one authoritative lifecycle owner.
 
@@ -237,21 +261,50 @@ terraform init -backend=false -input=false -lockfile=readonly
 terraform validate
 ```
 
-Current CI validates all eight roots plus both backend declarations.
+Current static CI validates all ten roots plus both backend declarations:
 
-Static validation proves provider/HCL correctness, not live Snowflake authorization.
+```text
+organization
+identity/dev
+identity/uat
+identity/prod
+dev
+uat
+prod
+project-identity/dev
+project-identity/uat
+project-identity/prod
+backend azurerm
+backend s3
+```
+
+Static validation proves HCL/provider-schema correctness, not live Snowflake authorization.
 
 ## Apply order
 
 ```text
-remote state
--> organization
--> identity/dev
--> platform/dev
+remote state control plane
+-> organization bootstrap/import
+
+DEV:
+identity/dev
+-> platform/dev reviewed plan/apply/verify
 -> project-identity/dev
--> project PR workspace live test
--> UAT
--> PROD
+-> project PR workspace + stable deployment live tests
+
+UAT:
+identity/uat
+-> platform/uat reviewed plan/apply/verify
+-> project-identity/uat
+-> immutable promotion test
+
+PROD:
+identity/prod
+-> platform/prod protected plan/apply/verify
+-> project-identity/prod
+-> exact approved SHA promotion
 ```
 
-No automated apply is enabled yet.
+No automated Terraform apply is enabled yet. Do not automate apply before live DEV remote-state/WIF/least-privilege behavior is understood.
+
+See ADR-023, ADR-024, ADR-027 and ADR-034.
