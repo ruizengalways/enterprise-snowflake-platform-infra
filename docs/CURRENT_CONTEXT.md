@@ -4,7 +4,7 @@
 >
 > **Updated:** 2026-08-29
 >
-> **Current phase:** Phase 1 platform foundation + early framework foundation. Source/static CI is progressing; no live Snowflake apply has happened yet.
+> **Current phase:** Phase 1 platform foundation + early framework foundation. Source/static CI is increasingly complete; no live Snowflake apply has happened yet.
 
 ## 1. Core rules
 
@@ -14,11 +14,11 @@
 - One Snowflake object has one authoritative lifecycle owner.
 - Git is configuration source of truth; `PLATFORM_CONTROL` is runtime/operational state.
 - Human identity and machine identity are separate.
-- Terraform defines stable platform roles/privileges; Entra ID / Okta / SCIM controls employee membership.
+- Terraform defines stable roles/privileges/warehouses; Entra ID / Okta / SCIM controls employee membership.
 - Recoverability, reconciliation, freshness, observability and cost attribution are first-class.
 - Do not start Kafka, Snowpipe Streaming or Openflow before platform/framework foundations are proven.
 
-## 2. Repositories
+## 2. Repositories and ownership
 
 ```text
 enterprise-snowflake-platform-infra
@@ -28,14 +28,12 @@ enterprise-snowflake-health-analytics
 enterprise-snowflake-transport-analytics
 ```
 
-Ownership:
+- **platform-infra** — accounts/platform Terraform, RBAC, warehouses, state/WIF, workspace access, cost/governance/control-plane foundation.
+- **data-project-framework** — metadata schemas/validation, workspace/query-tag utilities, dbt target resolution, metadata→dbt bridge, basic standard load configuration, reusable CI/workflows.
+- **demo-source-systems** — deterministic external-style source simulation only.
+- **health/transport** — domain RAW contracts/config/business SQL/tests/semantic/ingestion configuration.
 
-- **platform-infra** — Snowflake accounts/platform Terraform, RBAC, warehouses, state/WIF, workspace access, cost/governance/control-plane foundation;
-- **data-project-framework** — reusable metadata contracts/validation, workspace/query-tag utilities, dbt target resolution/package, reusable CI/workflows and future generic load/DQ/reconciliation mechanics;
-- **demo-source-systems** — deterministic external-style source simulation only;
-- **health/transport analytics** — domain RAW contracts/config/business SQL/tests/semantic/ingestion configuration.
-
-Project repos stay thin and pin framework revisions deliberately.
+Project repos stay thin and consume immutable framework revisions.
 
 ## 3. Snowflake topology
 
@@ -59,7 +57,9 @@ Snowflake Organization
 
 CI is not a fourth account.
 
-Database = environment × governed domain, not physical source. Stable schemas:
+Database = environment × governed domain, not physical source.
+
+Stable schemas:
 
 ```text
 STAGING
@@ -71,7 +71,7 @@ SEMANTIC
 
 Published schemas initially: `MARTS`, `SEMANTIC`. RAW source-purpose schemas appear only when a real source is onboarded.
 
-## 4. Human RBAC and employee membership
+## 4. Human RBAC / employee membership
 
 Per domain:
 
@@ -97,9 +97,9 @@ Policy:
 - READER = all stable-layer read;
 - DEV DEVELOPER = WRITE + transform compute;
 - UAT/PROD DEVELOPER = read-only by default;
-- domain authority never crosses into another domain unless explicitly granted.
+- domain authority never implies another domain.
 
-Employee lifecycle:
+Employee changes are IdP/SCIM operations, not Terraform user changes:
 
 ```text
 Employee / contractor
@@ -108,9 +108,7 @@ Employee / contractor
   -> AR_<DOMAIN>_<CAPABILITY>
 ```
 
-Adding/removing an employee from an existing domain must not require Terraform.
-
-## 5. Warehouses
+## 5. Domain compute
 
 ```text
 WH_<DOMAIN>_QUERY
@@ -119,25 +117,23 @@ WH_<DOMAIN>_CI   # DEV account only
 WH_PLATFORM_OPS
 ```
 
-Project metadata in each environment declares query/transform/CI warehouse keys. Root Terraform derives grants from metadata rather than hard-coding Health/Transport pairs.
+Environment project metadata declares query/transform/CI warehouse keys. Root Terraform derives grants from metadata; new domains do not require copied Health/Transport grant blocks.
 
-## 6. DEV personal workspace
+## 6. DEV personal + PR workspaces
 
 Human roles attach to `DEV_<DOMAIN>`, never `CI_<DOMAIN>`.
 
-DEV WRITE receives `CREATE SCHEMA` on the matching DEV database.
+DEV WRITE gets `CREATE SCHEMA` on its DEV database.
+
+Personal convention:
 
 ```text
 <DEVELOPER>_<LAYER>
 ```
 
-Example: `DEV_HEALTH.ALICE_SMITH_STAGING`.
+This is a namespace convention, not a per-person security boundary.
 
-This is a namespace convention, **not** per-person security isolation. Strong personal isolation would require separate identity-governed personal roles.
-
-## 7. PR CI workspace and machine role
-
-Machine-only DEV capability:
+Machine-only CI capability:
 
 ```text
 AR_<DOMAIN>_CI
@@ -146,24 +142,17 @@ AR_<DOMAIN>_CI
   -> USAGE on WH_<DOMAIN>_CI
 ```
 
-Current examples:
-
-```text
-AR_HEALTH_CI
-AR_TRANSPORT_CI
-```
-
-PR schemas:
+PR convention:
 
 ```text
 PR_<NUMBER>_<LAYER>
 ```
 
-Framework rendering creates transient PR schemas with zero-day Time Travel and prefix-guarded cleanup.
+Framework PR schemas are transient with zero-day Time Travel and prefix-guarded cleanup.
 
-## 8. Project PR-CI Snowflake identities — implemented in source
+## 7. Project CI identities
 
-Lifecycle ordering:
+Lifecycle:
 
 ```text
 identity/dev
@@ -171,7 +160,7 @@ identity/dev
       -> project-identity/dev
 ```
 
-`terraform/stacks/project-identity/dev/` uses generic `terraform/modules/service-identity/` to create a WIF service user and bind it to an already-existing CI role. It does not create/expand that role and grants no account-level privileges.
+`terraform/stacks/project-identity/dev/` uses generic `service-identity` and grants no account-level privileges.
 
 ```text
 SU_GITHUB_HEALTH_CI
@@ -183,15 +172,11 @@ SU_GITHUB_TRANSPORT_CI
   -> repo:ruizengalways/enterprise-snowflake-transport-analytics:environment:ci
 ```
 
-Both use the DEV account-scoped Snowflake OIDC audience. Service users use `prevent_destroy`.
+Source is statically validated; no live apply yet. See ADR-027.
 
-This root is statically Terraform-validated but has not been applied to live Snowflake.
+## 8. Terraform lifecycle/state
 
-See ADR-027.
-
-## 9. Terraform lifecycle/state boundaries
-
-Eight independent roots/state objects:
+Eight independent state objects:
 
 ```text
 organization
@@ -204,24 +189,7 @@ platform/uat
 platform/prod
 ```
 
-Source roots:
-
-```text
-terraform/stacks/organization/
-terraform/stacks/identity/{dev,uat,prod}/
-terraform/stacks/dev/
-terraform/stacks/project-identity/dev/
-terraform/stacks/uat/
-terraform/stacks/prod/
-```
-
-State key added for project identity:
-
-```text
-enterprise-snowflake-platform-infra/project-identity/dev/terraform.tfstate
-```
-
-Platform Terraform identities:
+Platform Terraform WIF:
 
 ```text
 SU_GITHUB_TERRAFORM_DEV  -> AR_TERRAFORM_DEV
@@ -238,7 +206,7 @@ CREATE WAREHOUSE
 MANAGE GRANTS
 ```
 
-Routine Terraform does not activate ACCOUNTADMIN/SYSADMIN/SECURITYADMIN. Identity bootstrap may use ACCOUNTADMIN only for machine-identity establishment. Organization root alone uses ORGADMIN.
+Routine Terraform never activates ACCOUNTADMIN/SYSADMIN/SECURITYADMIN. Identity bootstrap may use ACCOUNTADMIN only to establish WIF; organization root alone uses ORGADMIN.
 
 Versions:
 
@@ -247,7 +215,7 @@ Terraform CLI                 1.16.0
 Snowflake Terraform provider  2.19.0
 ```
 
-## 10. Remote Terraform state
+## 9. Remote Terraform state
 
 Snowflake is not AWS-dependent.
 
@@ -264,34 +232,35 @@ terraform/backend-profiles/s3/backend.tf
 terraform/scripts/select-backend.sh
 ```
 
-OneDrive/SharePoint may store docs/runbooks/audit evidence, not authoritative live Terraform state. One deployment chooses one writable backend.
+OneDrive/SharePoint may hold docs/runbooks/audit evidence, not live Terraform state. One deployment chooses one writable backend.
 
-## 11. Framework executable baseline
-
-Current framework code includes:
+## 10. Framework executable baseline
 
 ```text
 src/enterprise_snowflake_framework/
 ├── workspaces.py
 ├── query_tags.py
 ├── metadata_validation.py
-└── targets.py
+├── targets.py
+└── dbt_vars.py
 
 project_schema/
 ├── project.schema.json
 ├── dataset.schema.json
 └── raw_contract.schema.json
 
-validation/validate_metadata.py
 scripts/
 ├── render_workspace_sql.py
 ├── render_query_tag.py
 ├── resolve_dbt_target.py
+├── render_dbt_vars.py
 └── assert_dbt_manifest.py
 
 dbt_package/
 ├── dbt_project.yml
-└── macros/environment/targets.sql
+└── macros/
+    ├── environment/targets.sql
+    └── loading/strategies.sql
 
 .github/actions/
 ├── validate-metadata/action.yml
@@ -302,49 +271,35 @@ dbt_package/
 └── pr-workspace.yml
 ```
 
-Framework Python dependencies remain deliberately small (`PyYAML`, `jsonschema`) outside the dbt execution dependency set.
+## 11. Metadata contracts
 
-## 12. Project/dataset/RAW metadata contracts
+Version 1 validates project, dataset and project-owned RAW-contract metadata.
 
-Version 1 schemas validate:
-
-```text
-project
-  code / name / repository / owner_team
-
-dataset
-  raw_contract / load_strategy / implementation
-  business_key / watermark / freshness / reconciliation
-
-RAW contract
-  source_system / entity / grain / business_key
-  columns/types/nullability/classification
-  source_timestamp / snapshot|append|cdc semantics
-  cadence / retention / breaking_change_policy
-```
-
-Semantic checks include duplicate dataset IDs/columns, RAW contract reference containment/existence, keyed-strategy business keys, freshness threshold order, declared business/source timestamp columns, and required CDC operation/sequence columns.
-
-Metadata deliberately does **not** encode business joins, calculations, arbitrary SQL or workflow branching.
-
-Reusable action:
+Dataset technical metadata:
 
 ```text
-enterprise-snowflake-data-project-framework/.github/actions/validate-metadata/action.yml
+raw_contract
+load_strategy
+implementation
+business_key
+watermark_column
+freshness
+reconciliation
 ```
 
-Health and Transport now both invoke it from thin project workflows pinned to framework commit `01ce2fe9fcba3e5084297120703301f0dea4df1a`.
+RAW contracts include source/entity/grain/key, columns/types/nullability/classification, source timestamp, snapshot/append/CDC semantics, cadence, retention and breaking-change policy.
+
+Cross-file validation checks references, duplicate IDs/columns, keyed-strategy keys, freshness order, declared timestamp/key columns and CDC operation/sequence columns.
+
+Metadata does **not** contain business joins, formulas, arbitrary SQL or workflow branching.
 
 See ADR-028.
 
-## 13. Current domain metadata baselines
+## 12. Current domain contracts
 
-### Health
-
-First dataset:
+### Health `patient`
 
 ```text
-patient
 source_system:       ehr_mssql
 load_strategy:       scd2_snapshot
 business_key:        patient_id
@@ -354,20 +309,9 @@ freshness:           warn 60 min / error 120 min
 contract policy:     versioned_contract
 ```
 
-Files:
+### Transport `vehicle_position`
 
 ```text
-health-analytics/config/project.yml
-health-analytics/config/datasets/patient.yml
-health-analytics/contracts/raw/patient.yml
-```
-
-### Transport
-
-First dataset:
-
-```text
-vehicle_position
 source_system:       gtfs_realtime
 load_strategy:       append_only
 RAW identity field:  vehicle_id
@@ -377,36 +321,28 @@ freshness:           warn 5 min / error 15 min
 contract policy:     versioned_contract
 ```
 
-Files:
+Transport ingestion technology remains deferred; future direct Snowpipe Streaming and Kafka Connector paths must converge on this logical RAW contract.
 
-```text
-transport-analytics/config/project.yml
-transport-analytics/config/datasets/vehicle_position.yml
-transport-analytics/contracts/raw/vehicle_position.yml
-```
+## 13. dbt physical target resolution
 
-Kafka/Snowpipe Streaming are still deferred; this contract exists so either future ingestion path can converge on the same downstream boundary.
-
-## 14. dbt physical target resolution — implemented and CI-proven
-
-Canonical reference versions:
+Canonical stable reference:
 
 ```text
 dbt-core      1.12.3
 dbt-snowflake 1.12.0
 ```
 
-The framework Python resolver is authoritative for environment routing. Inputs are deliberately small:
+Resolver inputs:
 
 ```text
 project_code
 environment = dev | ci | uat | prod
 workload    = query | transform | ci
-optional developer identity for DEV personal workspace
+optional developer for DEV personal workspace
 optional PR number for CI
 ```
 
-It resolves:
+Outputs:
 
 ```text
 ESF_PROJECT_CODE
@@ -417,90 +353,113 @@ DBT_WAREHOUSE
 DBT_DEFAULT_SCHEMA
 ```
 
-Canonical examples:
+Examples:
 
 ```text
 HEALTH + dev + transform + alice.smith
- -> DEV_HEALTH
- -> WH_HEALTH_TRANSFORM
- -> ALICE_SMITH_<LAYER>
+ -> DEV_HEALTH / WH_HEALTH_TRANSFORM / ALICE_SMITH_<LAYER>
 
 HEALTH + ci + ci + PR 123
- -> CI_HEALTH
- -> WH_HEALTH_CI
- -> PR_123_<LAYER>
+ -> CI_HEALTH / WH_HEALTH_CI / PR_123_<LAYER>
 
 TRANSPORT + uat + transform
- -> UAT_TRANSPORT
- -> WH_TRANSPORT_TRANSFORM
- -> stable <LAYER> schema
-
-HEALTH + prod + query
- -> PROD_HEALTH
- -> WH_HEALTH_QUERY
- -> stable <LAYER> schema
+ -> UAT_TRANSPORT / WH_TRANSPORT_TRANSFORM / <LAYER>
 ```
 
-The framework dbt package provides:
+Root project macros explicitly delegate database/schema naming to the framework package. Model SQL should use `ref()` / `source()` and never hard-code DEV/UAT/PROD physical databases.
 
-```text
-esf_generate_database_name
-esf_generate_schema_name
-```
-
-Each domain root keeps explicit thin wrapper macros that delegate to these package macros. Model SQL should use `ref()` / `source()` and must not hard-code physical DEV/UAT/PROD database names.
-
-Health/Transport `profiles.yml` files contain no password/private key. Human DEV defaults to external-browser authentication. Machine profiles use Snowflake workload identity with `workload_identity_provider: OIDC` and a short-lived token supplied near execution.
-
-Domain dbt packages pin framework revision `01ce2fe9fcba3e5084297120703301f0dea4df1a` and do not follow framework `main` implicitly.
-
-Reusable static validation action:
-
-```text
-.github/actions/dbt-static-check/action.yml
-```
-
-It installs pinned dbt versions, resolves an offline CI target, installs packages and runs `dbt parse` without connecting to Snowflake.
-
-Framework CI goes further: it inspects `manifest.json` and proves the smoke model resolves to `CI_HEALTH.PR_123_STAGING`.
+Profiles contain no passwords/private keys. Human DEV defaults to external-browser auth; machine targets use Snowflake `workload_identity`, provider `OIDC`, and a short-lived token.
 
 See ADR-029.
 
-## 15. Reusable PR workspace workflow
+## 14. Metadata → dbt bridge
 
-Framework:
-
-```text
-.github/workflows/pr-workspace.yml
-```
-
-Thin callers:
+`render_dbt_vars.py` validates the project tree first and exposes only bounded technical metadata:
 
 ```text
-health-analytics/.github/workflows/pr-workspace.yml
-transport-analytics/.github/workflows/pr-workspace.yml
+esf_project
+esf_datasets
 ```
 
-Both currently pin framework commit:
+The reusable `dbt-static-check` action now:
 
 ```text
-7ffafbc83ec7da154f036613541bf34b8a913e1a
+install pinned framework + dbt
+-> resolve offline CI target
+-> validate/render project metadata into dbt vars
+-> dbt deps
+-> dbt parse --vars <validated vars>
 ```
 
-Lifecycle:
+Therefore a metadata change that affects materialization is tested together with the checked-in dbt package/profile/macros.
+
+## 15. Basic metadata-driven load strategies — implemented and CI-proven
+
+A standard project model can declare only its governed dataset ID:
+
+```jinja
+{{ enterprise_snowflake_framework.esf_configure_dataset('vehicle_position') }}
+```
+
+The project still writes explicit SQL. Framework reads validated dataset metadata and configures:
 
 ```text
-PR opened/reopened/synchronize -> create idempotent PR_<n>_* workspace
-PR closed                      -> drop only PR_<n>_* workspace
+full_refresh
+  -> materialized=table
+
+append_only
+  -> materialized=incremental
+  -> incremental_strategy=append
+
+incremental_merge
+  -> materialized=incremental
+  -> incremental_strategy=merge
+  -> unique_key from dataset.business_key
 ```
 
-The workflow targets GitHub Environment `ci`, renders QUERY_TAG/workspace SQL, installs Snowflake CLI, manually requests an account-scoped GitHub OIDC token, authenticates as the project CI service identity and executes only framework-generated workspace SQL. It does not currently execute arbitrary PR business code while holding Snowflake credentials.
+Composite keys remain composite.
+
+Important boundary: `append_only` does **not** invent a source/checkpoint predicate. The rows selected by the model during an incremental invocation are the rows appended. Source/watermark filtering stays explicit until a separately approved common checkpoint primitive exists.
+
+The basic macro deliberately fails for:
+
+```text
+implementation: custom
+scd2_snapshot
+scd2_merge
+scd2_stream_task
+```
+
+Custom logic stays project-owned; SCD2 requires dedicated implementations and invariant tests.
+
+See ADR-030.
+
+## 16. Framework revision alignment
+
+Health and Transport now use one aligned immutable framework revision for metadata action, dbt package, dbt static action and PR workspace workflow:
+
+```text
+3408025d4280d57c3bbed0c295e1686fa7d950ea
+```
+
+This prevents hidden drift where different shared capabilities point at unrelated framework commits.
+
+## 17. Reusable PR workspace workflow
+
+Thin project callers invoke the pinned framework workflow.
+
+```text
+PR opened/reopened/synchronize -> create PR_<n>_* schemas
+PR closed                      -> drop only PR_<n>_* schemas
+```
+
+The workflow targets GitHub Environment `ci`, requests a GitHub OIDC token with an account-scoped Snowflake audience, authenticates as the project CI service identity and executes framework-generated workspace SQL only. It does not currently run arbitrary PR business code while holding Snowflake credentials.
 
 No live project-CI identity/GitHub Environment exists yet, so no real PR schema has been created.
 
-## 16. Query-tag and cost attribution baseline
+## 18. Query tag + cost attribution
 
-Query-tag required keys:
+Required query-tag keys:
 
 ```text
 project
@@ -520,7 +479,7 @@ pr_number
 operation
 ```
 
-Do not include personal/secret/regulated/business payload data.
+No personal/secret/regulated/business payload data.
 
 Cost model:
 
@@ -530,20 +489,14 @@ Compute                         -> WH_<DOMAIN>_<WORKLOAD>
 Per-query execution attribution -> QUERY_TAG + QUERY_ATTRIBUTION_HISTORY
 Warehouse idle compute          -> WAREHOUSE_METERING_HISTORY
 Serverless/ingestion            -> service-specific usage histories
-Fine storage detail             -> Snowflake storage metrics/history
+Fine storage detail             -> Snowflake storage histories/metrics
 ```
 
-Baseline diagnostic SQL:
-
-```text
-snowflake/monitoring/queries/cost_attribution.sql
-```
-
-Query-attributed compute excludes idle time; do not label it the full warehouse bill.
+Baseline SQL: `snowflake/monitoring/queries/cost_attribution.sql`.
 
 See ADR-026.
 
-## 17. Verified CI status
+## 19. Verified CI
 
 ### Platform Terraform
 
@@ -553,68 +506,72 @@ Commit: 509f2986dd9b74f063e7f65b4dfcf8d7655cf5ed
 Result: SUCCESS
 ```
 
-Passed organization, identity/dev|uat|prod, dev, project-identity/dev, uat, prod, fmt, Azure backend and S3 backend validation.
+Includes organization, identity/dev|uat|prod, dev, project-identity/dev, uat, prod, fmt, Azure backend and S3 backend validation.
 
-### Framework
-
-Latest verified framework run after dbt resolver/package/actions documentation:
+### Framework basic-load proof
 
 ```text
-Run:    33234750090
-Commit: ceadb8c301aa068c78e5ca00c47b97195c59a2ab
+Run:    33234967048
+Commit: 3408025d4280d57c3bbed0c295e1686fa7d950ea
 Result: SUCCESS
 ```
 
-The dbt target implementation was explicitly proven in run `33234538065`: pinned dbt install, `dbt deps`, offline `dbt parse`, and manifest assertion all succeeded.
-
-### Health
+Both jobs succeeded. The dbt job proves:
 
 ```text
-Metadata CI:   33234613472  SUCCESS
-dbt Static CI: 33234696407  SUCCESS
+target -> CI_HEALTH.PR_123_STAGING
+full_refresh -> table
+append_only -> incremental + append
+incremental_merge -> incremental + merge + unique_key=id
 ```
 
-### Transport
+### Health aligned project CI
 
 ```text
-Metadata CI:   33234663148  SUCCESS
-dbt Static CI: 33234700682  SUCCESS
+Metadata CI:   33235029796  SUCCESS
+dbt Static CI: 33235034461  SUCCESS
 ```
 
-Static CI proves source/config/schema/package/macro validity. It does not prove live Snowflake authorization or runtime SQL behavior.
+### Transport aligned project CI
 
-## 18. What has NOT happened yet
+```text
+Metadata CI:   33235050367  SUCCESS
+dbt Static CI: 33235056338  SUCCESS
+```
+
+Static CI proves source/schema/package/macro/config validity, not live Snowflake authorization or runtime data correctness.
+
+## 20. What has NOT happened yet
 
 Do not claim these are complete:
 
 - no real Azure Blob/S3 state control plane provisioned;
-- no Snowflake DEV/UAT/PROD account bootstrap/import executed by this Terraform;
+- no Snowflake DEV/UAT/PROD account bootstrap/import executed by Terraform;
 - no Terraform identity root applied to live Snowflake;
 - no real DEV remote Terraform plan/apply;
 - no `project-identity/dev` live apply;
-- GitHub Environment `ci` values are not configured/tested against live Snowflake;
-- no real PR workspace create/drop executed in Snowflake;
-- no live dbt execution against Snowflake;
-- live effective grants remain unverified;
-- no UAT/PROD project deployment/promotion identities;
+- no live GitHub Environment `ci` WIF test;
+- no real PR workspace create/drop in Snowflake;
+- no live dbt run against Snowflake;
+- live effective grants are unverified;
+- no generic source checkpoint/watermark predicate yet;
+- no reconciliation/freshness/audit runtime primitives yet;
+- no SCD2 framework implementation yet;
+- no UAT/PROD project deployment identities/workflows yet;
 - no persisted cost views/resource monitors/budgets;
-- no generic load strategy has yet been executed against Snowflake;
-- no Health/Transport business model implementation yet;
+- no Health/Transport business models yet;
 - Kafka Connector, Snowpipe Streaming and Openflow remain deferred.
 
-## 19. Next useful source work without live accounts
+## 21. Next useful source work
 
-The environment resolver and reusable metadata/static dbt CI are now complete. Next source work should be:
+Without live accounts, the next highest-value sequence is:
 
 ```text
-1. implement/test basic generic load primitives
-   - full_refresh
-   - append_only
-   - incremental_merge
-2. add query-tag integration at dbt invocation/hook boundary
-3. implement reconciliation/freshness/audit primitives
-4. define thin DEV deployment + UAT/PROD promotion identity/workflow contracts
-5. only after those foundations, implement SCD2 variants and real project models
+1. integrate canonical QUERY_TAG into dbt invocation/model lifecycle
+2. implement reconciliation/freshness/audit primitives
+3. design explicit checkpoint/watermark helper without hiding source semantics
+4. implement dedicated SCD2 snapshot/merge/stream-task patterns + invariants
+5. define DEV deployment and UAT/PROD promotion identity/workflow contracts
 ```
 
 When real infrastructure becomes available:
@@ -626,14 +583,14 @@ choose Azure Blob OR S3
 -> identity/dev apply
 -> platform/dev plan/apply/verify
 -> project-identity/dev apply
--> configure project GitHub Environment ci
--> real PR workspace create/drop test
--> live dbt smoke test
+-> configure GitHub Environment ci
+-> real PR workspace create/drop
+-> live dbt/basic-load smoke test
 -> UAT
 -> protected PROD
 ```
 
-## 20. Important ADRs
+## 22. Important ADRs
 
 ```text
 ADR-018  three-account topology
@@ -648,4 +605,5 @@ ADR-026  query-tag + cost-attribution contract
 ADR-027  project PR-CI OIDC identity lifecycle
 ADR-028  project/dataset/RAW metadata contracts
 ADR-029  dbt physical target resolution
+ADR-030  basic metadata-driven dbt load strategies
 ```
