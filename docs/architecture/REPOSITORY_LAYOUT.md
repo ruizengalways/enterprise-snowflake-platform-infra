@@ -1,157 +1,112 @@
 # Canonical Repository Directory Layout
 
-> **Status:** Accepted architecture plan
+> **Status:** Accepted architecture plan / current implemented paths where noted.
 >
-> **Scope:** All five Enterprise Snowflake repositories
+> **Scope:** All five Enterprise Snowflake repositories.
 >
-> **Rule:** Git does not track empty directories. Create a directory only with its first real file; do not add `.gitkeep` theatre.
+> **Rule:** Create directories with real content only; no `.gitkeep` theatre.
 
 ## 1. Design principles
 
 1. Repository boundaries come before folder convenience.
 2. One concern has one authoritative location.
-3. Health/Transport repositories stay thin; shared technical behaviour belongs in framework/platform repositories.
+3. Health/Transport repos stay thin; shared mechanics belong in framework/platform repos.
 4. Reusable GitHub workflows live under `.github/workflows/`.
-5. Terraform is split into reusable capability modules plus isolated deployable roots.
-6. Organization bootstrap, workload-identity bootstrap and routine account infrastructure use separate lifecycle/state roots.
-7. Terraform state backend selection is an execution adapter, not domain/platform business logic.
-8. Snowflake-native SQL is separated by lifecycle purpose from dbt models.
-9. Configuration is non-secret metadata, never credentials.
-10. Planned folders appear only when implementation reaches them.
+5. Terraform uses reusable modules + isolated lifecycle roots.
+6. Organization bootstrap, Terraform identity bootstrap and routine account infrastructure use separate state roots.
+7. Remote-state cloud choice is an execution adapter, not Snowflake/domain logic.
+8. Snowflake-native SQL is separated from dbt/model lifecycle.
+9. Config contains non-secret metadata, never credentials.
 
 ## 2. `enterprise-snowflake-platform-infra`
+
+Current/target structure:
 
 ```text
 enterprise-snowflake-platform-infra/
 ├── README.md
-├── .gitignore
-├── .editorconfig
 ├── .terraform-version
-│
 ├── docs/
-│   ├── CURRENT_CONTEXT.md                  # first read in a new conversation
-│   ├── PROJECT_BLUEPRINT.md                # long-term canonical architecture
+│   ├── CURRENT_CONTEXT.md                    # fast new-session handoff
+│   ├── PROJECT_BLUEPRINT.md                  # canonical long-term architecture
 │   ├── architecture/
 │   │   ├── REPOSITORY_LAYOUT.md
 │   │   ├── ACCOUNT_TOPOLOGY.md
 │   │   ├── RBAC_MODEL.md
-│   │   ├── TERRAFORM_STATE_AND_IDENTITY.md
-│   │   └── RELEASE_AND_RECOVERY.md         # Phase 3
-│   ├── adr/
-│   │   └── ADR-*.md
+│   │   └── TERRAFORM_STATE_AND_IDENTITY.md
+│   ├── adr/ADR-*.md
 │   ├── standards/
 │   │   ├── NAMING_CONVENTIONS.md
 │   │   ├── TERRAFORM_STANDARDS.md
-│   │   └── SQL_STANDARDS.md                # when native SQL begins
+│   │   └── COST_ATTRIBUTION.md
 │   └── runbooks/
 │       └── terraform-platform-bootstrap.md
-│
 ├── config/
-│   ├── organization.yml                    # DEV/UAT/PROD account contract
-│   ├── environments/
-│   │   ├── dev.yml                         # includes Terraform WIF metadata
-│   │   ├── uat.yml
-│   │   └── prod.yml
-│   ├── projects/                           # generic domain onboarding later
-│   ├── access-profiles/
-│   └── governance/
-│
+│   ├── organization.yml
+│   └── environments/{dev,uat,prod}.yml
 ├── terraform/
 │   ├── README.md
 │   ├── backend-profiles/
-│   │   ├── azurerm/backend.tf              # Azure Blob partial backend declaration
-│   │   └── s3/backend.tf                   # S3 partial backend + native lockfile
-│   ├── scripts/
-│   │   └── select-backend.sh               # materialises ignored backend.generated.tf
+│   │   ├── azurerm/backend.tf
+│   │   └── s3/backend.tf
+│   ├── scripts/select-backend.sh
 │   ├── modules/
-│   │   ├── analytics-environment/          # one domain database + stable schemas
-│   │   ├── warehouse/                      # standard warehouse guardrails
-│   │   ├── rbac/                           # platform/domain roles + DB roles + grants
-│   │   ├── platform-control/               # PLATFORM_CONTROL structure
-│   │   ├── workload-identity/              # GitHub OIDC SERVICE user + AR_TERRAFORM role
-│   │   └── cost-controls/                  # later Phase 1
+│   │   ├── analytics-environment/
+│   │   ├── warehouse/
+│   │   ├── rbac/
+│   │   ├── workspace-access/
+│   │   ├── platform-control/
+│   │   └── workload-identity/
 │   └── stacks/
-│       ├── organization/                   # ORGADMIN only; account creation/import
-│       ├── identity/
-│       │   ├── dev/                        # ACCOUNTADMIN bootstrap only
-│       │   ├── uat/
-│       │   └── prod/
-│       ├── dev/                            # routine AR_TERRAFORM_DEV
-│       ├── uat/                            # routine AR_TERRAFORM_UAT
-│       └── prod/                           # routine AR_TERRAFORM_PROD
-│
+│       ├── organization/
+│       ├── identity/{dev,uat,prod}/
+│       ├── dev/
+│       ├── uat/
+│       └── prod/
 ├── snowflake/
-│   ├── bootstrap/                          # only if privileged SQL bootstrap is required
-│   ├── control/{ddl,procedures,tasks}/
-│   ├── governance/{tags,masking,row-access}/
-│   ├── monitoring/{views,queries}/
-│   ├── alerts/
-│   └── recovery/{clone-swap,validation}/
-│
-└── .github/
-    └── workflows/
-        ├── terraform-ci.yml                # fmt + 7 roots + both backend profiles
-        ├── terraform-plan-dev.yml          # implemented; Azure Blob or S3 + Snowflake WIF
-        ├── terraform-apply-dev.yml          # only after real DEV plan review
-        ├── terraform-plan-uat.yml           # after DEV is proven
-        ├── terraform-apply-uat.yml
-        ├── terraform-plan-prod.yml          # after UAT is proven
-        └── terraform-apply-prod.yml         # protected/approved
+│   └── monitoring/queries/cost_attribution.sql
+└── .github/workflows/
+    ├── terraform-ci.yml
+    └── terraform-plan-dev.yml
 ```
 
-### Platform Infra rules
+Later real capabilities may add native SQL under `snowflake/control`, `governance`, `alerts`, `recovery`; do not create placeholders before they have content.
 
-- `organization/` is the only root allowed to use ORGADMIN; routine account stacks never create Snowflake accounts.
-- `identity/<env>/` owns the platform Terraform service user, OIDC trust and `AR_TERRAFORM_<ENV>` role; routine state never owns its own authentication identity.
-- Routine `dev/uat/prod` roots activate only their dedicated Terraform machine role.
-- Terraform roots do **not** commit a cloud-specific backend block. The runtime selector materialises either Azure Blob (`azurerm`) or S3.
-- `backend.generated.tf` is ignored and is never canonical source.
-- One deployment has one authoritative writable remote-state backend. Do not mirror a live state as writable in both Azure Blob and S3.
-- OneDrive/SharePoint may store docs/evidence but not authoritative live Terraform state.
-- `terraform/` owns selected stable infrastructure state.
-- `snowflake/` owns selected native SQL objects when Terraform/dbt is not the clearer lifecycle owner.
-- `config/` provides non-secret declarative inputs. OIDC subjects may be committed; credentials/tokens may not.
-- Terraform state, real `.tfvars`, private keys, passwords, cloud access keys and tokens are never committed.
+### Platform Infra ownership rules
 
-### Current Phase 1 domain convention
-
-```text
-DEV_HEALTH / CI_HEALTH / UAT_HEALTH / PROD_HEALTH
-DEV_TRANSPORT / CI_TRANSPORT / UAT_TRANSPORT / PROD_TRANSPORT
-
-WH_HEALTH_QUERY / WH_HEALTH_TRANSFORM / WH_HEALTH_CI
-WH_TRANSPORT_QUERY / WH_TRANSPORT_TRANSFORM / WH_TRANSPORT_CI
-```
-
-RBAC is domain-specific and includes `GUEST -> READER -> DEVELOPER -> ADMIN`; GUEST is published-data read-only.
-
-Employee role membership belongs to enterprise identity/SCIM, not Terraform user-by-user grants.
-
-### Current state/identity convention
-
-Microsoft-first state path:
-
-```text
-GitHub OIDC -> Microsoft Entra federation -> Azure Blob state
-GitHub OIDC -> SU_GITHUB_TERRAFORM_<ENV> -> AR_TERRAFORM_<ENV> -> Snowflake Terraform
-```
-
-AWS alternative:
-
-```text
-GitHub OIDC -> AWS IAM -> S3 state/.tflock
-GitHub OIDC -> SU_GITHUB_TERRAFORM_<ENV> -> AR_TERRAFORM_<ENV> -> Snowflake Terraform
-```
-
-The first remote execution path is manual DEV plan only. UAT/PROD plan/apply workflows stay deferred until the previous environment is proven.
+- `organization/` is the only ORGADMIN Terraform root.
+- `identity/<env>/` owns platform Terraform service user/WIF/`AR_TERRAFORM_<ENV>`.
+- routine `dev/uat/prod` roots own stable account/domain infrastructure.
+- `workspace-access` owns stable DEV personal/CI workspace permissions, not individual PR schemas.
+- human domain RBAC attaches only to stable environment databases; `CI_<DOMAIN>` uses `AR_<DOMAIN>_CI`.
+- employee membership comes from IdP/SCIM, not Terraform user records.
+- backend profile is selected at runtime (`azurerm` or `s3`).
+- Terraform state, real tfvars, keys/passwords/tokens are never committed.
 
 ## 3. `enterprise-snowflake-data-project-framework`
+
+Current implemented first slice plus target growth:
 
 ```text
 enterprise-snowflake-data-project-framework/
 ├── README.md
-├── CHANGELOG.md
-├── dbt_package/
+├── pyproject.toml
+├── src/enterprise_snowflake_framework/
+│   ├── __init__.py
+│   ├── workspaces.py                         # implemented
+│   └── query_tags.py                         # implemented
+├── scripts/
+│   ├── render_workspace_sql.py               # implemented
+│   └── render_query_tag.py                   # implemented
+├── tests/
+│   ├── test_workspaces.py                    # implemented
+│   └── test_query_tags.py                    # implemented
+├── docs/patterns/
+│   └── workspaces-and-query-tags.md          # implemented
+├── .github/workflows/
+│   └── framework-ci.yml                      # implemented
+│
+├── dbt_package/                              # Phase 2
 │   ├── dbt_project.yml
 │   ├── macros/
 │   │   ├── environment/
@@ -162,16 +117,11 @@ enterprise-snowflake-data-project-framework/
 │   │   ├── audit/
 │   │   └── operations/
 │   └── tests/generic/
-├── project_schema/
+├── project_schema/                           # Phase 2
 │   ├── project.schema.json
 │   ├── dataset.schema.json
 │   └── raw_contract.schema.json
-├── validation/
-├── bootstrap/{templates,scripts}/
-├── examples/{minimal-project,metadata}/
-├── docs/{patterns,operations}/
-└── .github/workflows/
-    ├── framework-ci.yml
+└── .github/workflows/                        # additional reusable workflows later
     ├── pr-ci.yml
     ├── deploy-dev.yml
     ├── promote-uat.yml
@@ -181,15 +131,21 @@ enterprise-snowflake-data-project-framework/
     └── backfill.yml
 ```
 
-Shared framework code owns generic technical behaviour, never domain business SQL.
+Rules:
+
+- framework code owns generic technical behaviour, never domain business SQL;
+- project repos consume pinned framework versions;
+- metadata validation must not become a second orchestration language;
+- workspace/query-tag utilities are deliberately dependency-light and reusable by GitHub workflows/dbt tooling.
 
 ## 4. `enterprise-snowflake-demo-source-systems`
+
+Target:
 
 ```text
 enterprise-snowflake-demo-source-systems/
 ├── README.md
 ├── pyproject.toml
-├── .env.example
 ├── sources/{health,transport}/
 ├── adapters/{rest,sse,gtfs_realtime}/
 ├── sinks/{files,sql_server,snowflake_direct,snowpipe_streaming,kafka}/
@@ -198,14 +154,20 @@ enterprise-snowflake-demo-source-systems/
 └── tests/{unit,integration}/
 ```
 
-This repository represents the world outside Snowflake and stops at the source/RAW boundary.
+It represents systems outside Snowflake and stops at the source/RAW boundary.
 
 ## 5. `enterprise-snowflake-health-analytics`
+
+Target:
 
 ```text
 enterprise-snowflake-health-analytics/
 ├── README.md
-├── config/{project.yml,datasets,contracts/raw,operations}
+├── config/
+│   ├── project.yml
+│   ├── datasets/
+│   ├── contracts/raw/
+│   └── operations/
 ├── dbt/
 │   ├── dbt_project.yml
 │   ├── packages.yml
@@ -213,18 +175,28 @@ enterprise-snowflake-health-analytics/
 │   ├── snapshots/
 │   ├── tests/{singular,domain}/
 │   └── seeds/
-├── ingestion/openflow/                     # Phase 8 only
-└── .github/workflows/{pr-ci,deploy-dev,promote-uat,promote-prod}.yml
+├── ingestion/openflow/                      # Phase 8 only
+└── .github/workflows/
+    ├── pr-ci.yml
+    ├── deploy-dev.yml
+    ├── promote-uat.yml
+    └── promote-prod.yml
 ```
 
-Health owns domain-specific batch/CDC/PII/SCD2/late-arrival/reconciliation/recovery behaviour. Generic mechanics remain in the framework.
+Health owns domain SQL/contracts/tests; generic mechanics remain in the framework.
 
 ## 6. `enterprise-snowflake-transport-analytics`
+
+Target:
 
 ```text
 enterprise-snowflake-transport-analytics/
 ├── README.md
-├── config/{project.yml,datasets,contracts/raw,operations}
+├── config/
+│   ├── project.yml
+│   ├── datasets/
+│   ├── contracts/raw/
+│   └── operations/
 ├── dbt/
 │   ├── dbt_project.yml
 │   ├── packages.yml
@@ -232,17 +204,23 @@ enterprise-snowflake-transport-analytics/
 │   ├── snapshots/
 │   ├── tests/{singular,domain}/
 │   └── seeds/
-├── ingestion/{snowpipe_streaming,kafka_connector}/
-└── .github/workflows/{pr-ci,deploy-dev,promote-uat,promote-prod}.yml
+├── ingestion/
+│   ├── snowpipe_streaming/
+│   └── kafka_connector/
+└── .github/workflows/
+    ├── pr-ci.yml
+    ├── deploy-dev.yml
+    ├── promote-uat.yml
+    └── promote-prod.yml
 ```
 
-Direct Snowpipe Streaming and Kafka Connector paths target the same project-owned RAW event contract; normally one path is active.
+Direct Snowpipe Streaming and Kafka Connector later target the same logical RAW event contract; normally one path is active.
 
 ## 7. Dependency direction
 
 ```text
 platform-infra
-    │ provisions guardrails/infrastructure
+    │ provisions accounts/RBAC/warehouses/guardrails
     ▼
 health-analytics / transport-analytics
     ▲
@@ -256,24 +234,24 @@ source-systems
 RAW contract -> project downstream
 ```
 
-Framework never imports project code; platform infra never owns domain business models; source simulation never depends on downstream analytics.
+Rules:
 
-## 8. Intentionally deferred paths
+- framework never imports project business code;
+- platform infra never owns Health/Transport business models;
+- source simulator never depends on downstream analytics;
+- project repos do not call each other directly.
 
-Do not create cosmetic placeholder content before the relevant phase for:
+## 8. Deferred paths
 
-- Kafka Connector;
-- direct Snowpipe Streaming;
-- Openflow;
-- masking/row-access policies;
-- cost-control implementation;
-- DEV apply automation until real DEV plan is reviewed;
-- UAT/PROD platform plan/apply automation until the preceding environment is proven;
-- project CI/deployment workload identities;
-- production rollback automation;
-- recovery procedures;
-- semantic regression tooling;
-- full reconciliation engine;
-- full observability dashboards.
+Do not create cosmetic placeholders for:
 
-The repository tree grows with working capabilities, not ahead of them.
+```text
+Kafka Connector
+Snowpipe Streaming
+Openflow
+full governance policies
+full observability dashboards
+production rollback automation
+```
+
+Current next growth belongs in project-CI identity/workflow, metadata schemas/validation and dbt environment-resolution primitives.
