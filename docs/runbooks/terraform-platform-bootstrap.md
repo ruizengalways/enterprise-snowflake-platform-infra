@@ -2,20 +2,22 @@
 
 ## Purpose
 
-Execute the Phase 1 control-plane bootstrap without mixing organization authority, Terraform identity bootstrap, routine platform infrastructure state, or cloud-specific state plumbing.
+Execute the Phase 1 control-plane bootstrap without mixing organization authority, Terraform identity bootstrap, routine platform infrastructure state, project workload identity bootstrap, or cloud-specific state plumbing.
 
 This runbook assumes source/static CI is already green. It does **not** contain real credentials or account identifiers.
 
 ## Safety rules
 
 - Never commit Snowflake private keys/passwords, cloud access keys, OIDC tokens, Terraform state or real `.tfvars`.
-- Organization, identity and routine platform roots use separate state keys.
+- Organization, platform identity, routine platform and project identity roots use separate state keys.
 - Organization bootstrap may use ORGADMIN only for account lifecycle.
-- Identity bootstrap may use ACCOUNTADMIN only to establish the dedicated routine Terraform identity.
+- Identity bootstrap roots may use ACCOUNTADMIN only to establish dedicated WIF service identities and grants to already-defined machine roles.
 - Routine platform Terraform uses only `AR_TERRAFORM_<ENV>`.
+- Routine project delivery uses only `AR_<DOMAIN>_CI` or `AR_<DOMAIN>_DEPLOY` as appropriate.
 - Start with DEV. Do not enable UAT/PROD apply before the preceding environment is verified.
 - Do not run `terraform destroy` against organization or identity bootstrap roots.
 - Choose one authoritative remote-state backend for a deployment. Do not make Azure Blob and S3 simultaneous writable copies of the same state.
+- UAT/PROD human transform compute is not a standing baseline grant. Emergency execution must be JIT/break-glass through enterprise identity governance.
 
 ## 1. Choose the remote-state backend
 
@@ -55,7 +57,7 @@ Terraform uses S3 native `use_lockfile = true`. Do not add DynamoDB locking for 
 
 ## 2. State keys
 
-Whichever backend is selected, retain:
+Whichever backend is selected, retain these independent lifecycle states:
 
 ```text
 enterprise-snowflake-platform-infra/organization/terraform.tfstate
@@ -65,7 +67,12 @@ enterprise-snowflake-platform-infra/identity/prod/terraform.tfstate
 enterprise-snowflake-platform-infra/platform/dev/terraform.tfstate
 enterprise-snowflake-platform-infra/platform/uat/terraform.tfstate
 enterprise-snowflake-platform-infra/platform/prod/terraform.tfstate
+enterprise-snowflake-platform-infra/project-identity/dev/terraform.tfstate
+enterprise-snowflake-platform-infra/project-identity/uat/terraform.tfstate
+enterprise-snowflake-platform-infra/project-identity/prod/terraform.tfstate
 ```
+
+Do not merge project workload identities into routine platform state. The platform root creates the machine roles; the project-identity root creates WIF service users that bind to those existing roles.
 
 ## 3. Materialise the backend profile
 
@@ -81,7 +88,7 @@ or:
 bash terraform/scripts/select-backend.sh s3 terraform/stacks/organization
 ```
 
-Repeat for the specific root you are about to initialise. `backend.generated.tf` must remain uncommitted.
+Repeat for the specific root you are about to initialise, including `project-identity/<env>`. `backend.generated.tf` must remain uncommitted.
 
 ## 4. Define local/control-plane inputs
 
@@ -149,7 +156,7 @@ terraform -chdir=terraform/stacks/organization init \
   -backend-config="region=${TF_STATE_REGION}"
 ```
 
-Use the matching state key when initialising another root.
+Use the matching independent state key when initialising another root.
 
 ## 6. Organization account bootstrap/import
 
@@ -173,13 +180,16 @@ Do not proceed using guessed identifiers. `DEV_HEALTH` is a database name, not a
 
 ## 8. Choose DEV Snowflake OIDC audience
 
-Define a non-empty audience scoped to the DEV Snowflake account and use the same exact value in:
+Define a non-empty audience scoped to the DEV Snowflake account and use the same exact value for all DEV Snowflake workload identities and their GitHub Environment token requests.
+
+At minimum this includes:
 
 1. `identity/dev` variable `oidc_audience`;
-2. GitHub Environment `dev` variable `SNOWFLAKE_OIDC_AUDIENCE`;
-3. the GitHub OIDC token request in `terraform-plan-dev.yml`.
+2. `project-identity/dev` variable `oidc_audience`;
+3. Platform Infra GitHub Environment `dev` variable `SNOWFLAKE_OIDC_AUDIENCE`;
+4. Health/Transport GitHub Environments `ci` and `dev` variables `SNOWFLAKE_OIDC_AUDIENCE`.
 
-Do not use the shared `snowflakecomputing.com` audience for the platform Terraform identities.
+Do not use the shared `snowflakecomputing.com` audience.
 
 ## 9. Bootstrap DEV Terraform identity
 
@@ -223,7 +233,7 @@ MANAGE GRANTS
 
 Do not add SYSADMIN/SECURITYADMIN/ACCOUNTADMIN merely to make the first plan easier.
 
-## 11. Configure GitHub Environment `dev`
+## 11. Configure Platform Infra GitHub Environment `dev`
 
 Create/protect:
 
@@ -304,7 +314,8 @@ Confirm expected Platform Infra objects only:
 - `DEV_HEALTH`, `CI_HEALTH`, `DEV_TRANSPORT`, `CI_TRANSPORT`;
 - stable DEV transformation schemas;
 - `PLATFORM_CONTROL` structural schemas;
-- domain/platform account roles;
+- domain/platform human roles;
+- `AR_<DOMAIN>_CI` and `AR_<DOMAIN>_DEPLOY` machine roles;
 - domain database roles and grants;
 - domain QUERY/TRANSFORM/CI warehouses and `WH_PLATFORM_OPS`.
 
@@ -324,7 +335,7 @@ Only add it after:
 4. least-privilege gaps are understood;
 5. an approval/control mechanism is chosen.
 
-## 16. Post-apply Snowflake verification
+## 16. Post-apply DEV platform verification
 
 After a reviewed DEV apply:
 
@@ -341,20 +352,92 @@ Validate explicitly:
 - Transport roles do not grant Health authority;
 - GUEST sees only MARTS/SEMANTIC in stable DEV databases;
 - GUEST sees no CI database;
-- DEVELOPER has WRITE only in DEV;
-- CI warehouses are not granted to human domain roles.
+- DEVELOPER has WRITE/TRANSFORM only in DEV;
+- CI warehouses are not granted to human domain roles;
+- `AR_<DOMAIN>_CI` has its CI warehouse and `EXECUTE TASK` but not serverless `EXECUTE MANAGED TASK`;
+- `AR_<DOMAIN>_DEPLOY` has the stable domain WRITE capability, transform warehouse and native Stream/Task/Dynamic Table deployment privileges.
 
-## 17. UAT and PROD progression
+## 17. Bootstrap DEV project workload identities
 
-Only after DEV is proven:
+Only after `platform/dev` has created the target machine roles, initialise the independent project identity root and plan/apply it through the controlled ACCOUNTADMIN bootstrap path:
 
-```text
-identity/uat -> UAT plan -> protected UAT apply -> verify
-        ↓
-identity/prod -> protected PROD plan/apply -> verify
+```bash
+bash terraform/scripts/select-backend.sh "${TF_STATE_BACKEND}" terraform/stacks/project-identity/dev
+
+terraform -chdir=terraform/stacks/project-identity/dev init \
+  <selected-backend-config-for-project-identity/dev>
+
+terraform -chdir=terraform/stacks/project-identity/dev plan \
+  -var="oidc_audience=<dev-account-scoped-audience>"
 ```
 
-PROD GitHub Environment should require stronger review/protection than DEV.
+Expected service identities:
+
+```text
+SU_GITHUB_HEALTH_CI        -> AR_HEALTH_CI
+SU_GITHUB_TRANSPORT_CI     -> AR_TRANSPORT_CI
+SU_GITHUB_HEALTH_DEPLOY    -> AR_HEALTH_DEPLOY
+SU_GITHUB_TRANSPORT_DEPLOY -> AR_TRANSPORT_DEPLOY
+```
+
+Verify with `SHOW USERS` / `SHOW GRANTS TO USER` before testing project workflows. Do not grant human roles or system-admin roles to these service users.
+
+## 18. Configure DEV project GitHub Environments and test delivery
+
+In both Health and Transport repositories configure:
+
+```text
+ci
+dev
+```
+
+Each environment must define the DEV-account values:
+
+```text
+SNOWFLAKE_ACCOUNT
+SNOWFLAKE_OIDC_AUDIENCE
+```
+
+Then verify in this order:
+
+1. PR workspace create/drop authenticates as `SU_GITHUB_<DOMAIN>_CI`;
+2. no project PR business code receives Snowflake credentials;
+3. manual project deployment is given a full 40-character project Git SHA;
+4. the caller/reusable workflow is pinned to the approved framework SHA;
+5. project `dbt/packages.yml` uses that same framework SHA;
+6. deployment authenticates as `SU_GITHUB_<DOMAIN>_DEPLOY` and targets `DEV_<DOMAIN>` / `WH_<DOMAIN>_TRANSFORM`.
+
+Do not promote to UAT merely because static CI is green; prove the real DEV authorization/runtime behavior first.
+
+## 19. UAT progression
+
+After DEV is proven:
+
+```text
+identity/uat
+  -> platform/uat reviewed plan/apply/verify
+  -> project-identity/uat
+  -> configure Health/Transport GitHub Environment uat
+  -> promote an already-verified immutable project Git SHA
+```
+
+`project-identity/uat` creates only `SU_GITHUB_<DOMAIN>_DEPLOY` identities bound to the UAT `AR_<DOMAIN>_DEPLOY` roles.
+
+UAT human roles have no permanent transform warehouse grant. Any emergency manual execution is JIT/break-glass through the enterprise identity-governance process.
+
+## 20. PROD progression
+
+Only after UAT promotion is verified:
+
+```text
+identity/prod
+  -> platform/prod protected plan/apply/verify
+  -> project-identity/prod
+  -> configure protected Health/Transport GitHub Environment prod
+  -> promote the exact approved project Git SHA
+```
+
+PROD GitHub Environments should require stronger review/protection than DEV/UAT. Promotion changes the target environment, not the code revision. Human ADMIN is not the routine deployment principal and does not receive permanent transform warehouse `USAGE` in the baseline.
 
 ## Related documents
 
@@ -363,4 +446,4 @@ PROD GitHub Environment should require stronger review/protection than DEV.
 - `docs/architecture/ACCOUNT_TOPOLOGY.md`
 - `docs/architecture/RBAC_MODEL.md`
 - `docs/standards/TERRAFORM_STANDARDS.md`
-- ADR-021, ADR-023, ADR-024
+- ADR-021, ADR-023, ADR-024, ADR-027
