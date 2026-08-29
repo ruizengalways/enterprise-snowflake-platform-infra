@@ -1,0 +1,143 @@
+name: Platform Control SQL Deploy DEV
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: platform-control-sql-deploy-dev
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    name: deploy PLATFORM_CONTROL operational SQL to DEV
+    runs-on: ubuntu-latest
+    environment: dev
+
+    env:
+      SNOWFLAKE_ORGANIZATION_NAME: ${{ vars.SNOWFLAKE_ORGANIZATION_NAME }}
+      SNOWFLAKE_ACCOUNT_NAME: ${{ vars.SNOWFLAKE_ACCOUNT_NAME }}
+      SNOWFLAKE_OIDC_AUDIENCE: ${{ vars.SNOWFLAKE_OIDC_AUDIENCE }}
+      SNOWFLAKE_AUTHENTICATOR: WORKLOAD_IDENTITY
+      SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER: OIDC
+      SNOWFLAKE_ENHANCED_EXIT_CODES: "1"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Verify required environment configuration
+        shell: bash
+        run: |
+          set -euo pipefail
+          for name in \
+            SNOWFLAKE_ORGANIZATION_NAME \
+            SNOWFLAKE_ACCOUNT_NAME \
+            SNOWFLAKE_OIDC_AUDIENCE; do
+            if [[ -z "${!name:-}" ]]; then
+              echo "Missing required GitHub environment variable: ${name}" >&2
+              exit 1
+            fi
+          done
+
+      - name: Resolve DEV platform identity and request Snowflake OIDC token
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          snowflake_user="$(awk '
+            /^terraform_identity:/ { in_identity=1; next }
+            in_identity && /^  user_name:/ { print $2; exit }
+          ' config/environments/dev.yml)"
+
+          snowflake_role="$(awk '
+            /^terraform_identity:/ { in_identity=1; next }
+            in_identity && /^  role_name:/ { print $2; exit }
+          ' config/environments/dev.yml)"
+
+          if [[ -z "${snowflake_user}" || -z "${snowflake_role}" ]]; then
+            echo "Could not resolve terraform_identity user/role from DEV config." >&2
+            exit 1
+          fi
+
+          response="$(curl --fail --silent --show-error \
+            --get \
+            --header "Authorization: Bearer ${ACTIONS_ID_TOKEN_REQUEST_TOKEN}" \
+            --data-urlencode "audience=${SNOWFLAKE_OIDC_AUDIENCE}" \
+            "${ACTIONS_ID_TOKEN_REQUEST_URL}")"
+
+          token="$(jq -er '.value' <<<"${response}")"
+          echo "::add-mask::${token}"
+
+          echo "SNOWFLAKE_TOKEN=${token}" >> "${GITHUB_ENV}"
+          echo "SNOWFLAKE_USER=${snowflake_user}" >> "${GITHUB_ENV}"
+          echo "SNOWFLAKE_ROLE=${snowflake_role}" >> "${GITHUB_ENV}"
+          echo "SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ORGANIZATION_NAME}-${SNOWFLAKE_ACCOUNT_NAME}" >> "${GITHUB_ENV}"
+
+      - name: Install pinned Snowflake CLI
+        shell: bash
+        run: |
+          python -m pip install "snowflake-cli==3.23.0"
+          snow --version
+
+      - name: Verify Snowflake workload identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          snow sql \
+            --temporary-connection \
+            --account "${SNOWFLAKE_ACCOUNT}" \
+            --user "${SNOWFLAKE_USER}" \
+            --role "${SNOWFLAKE_ROLE}" \
+            --authenticator WORKLOAD_IDENTITY \
+            --workload-identity-provider OIDC \
+            --enable-templating NONE \
+            --local-only \
+            --enhanced-exit-codes \
+            -q 'select current_organization_name(), current_account_name(), current_user(), current_role()'
+
+      - name: Deploy PLATFORM_CONTROL operational SQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          snow sql \
+            --temporary-connection \
+            --account "${SNOWFLAKE_ACCOUNT}" \
+            --user "${SNOWFLAKE_USER}" \
+            --role "${SNOWFLAKE_ROLE}" \
+            --authenticator WORKLOAD_IDENTITY \
+            --workload-identity-provider OIDC \
+            --enable-templating NONE \
+            --local-only \
+            --enhanced-exit-codes \
+            -f snowflake/control/operations/pipeline_checkpoint.sql \
+            -f snowflake/control/operations/pipeline_run.sql \
+            -f snowflake/control/operations/pipeline_check_result.sql \
+            -f snowflake/control/operations/advance_pipeline_checkpoint.sql
+
+      - name: Verify operational objects
+        shell: bash
+        run: |
+          set -euo pipefail
+          snow sql \
+            --temporary-connection \
+            --account "${SNOWFLAKE_ACCOUNT}" \
+            --user "${SNOWFLAKE_USER}" \
+            --role "${SNOWFLAKE_ROLE}" \
+            --authenticator WORKLOAD_IDENTITY \
+            --workload-identity-provider OIDC \
+            --enable-templating NONE \
+            --local-only \
+            --enhanced-exit-codes \
+            -q "select table_name from PLATFORM_CONTROL.INFORMATION_SCHEMA.TABLES where table_schema = 'OPERATIONS' and table_name in ('PIPELINE_CHECKPOINT','PIPELINE_RUN','PIPELINE_CHECK_RESULT') order by table_name; show procedures like 'ADVANCE_PIPELINE_CHECKPOINT' in schema PLATFORM_CONTROL.OPERATIONS;"
