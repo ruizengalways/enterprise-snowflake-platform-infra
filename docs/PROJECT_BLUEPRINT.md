@@ -1,22 +1,32 @@
 # Enterprise Snowflake Platform — Project Blueprint
 
-> **Status:** Phase 1 in progress — remote-state/WIF execution spine implemented in source and static CI; real control-plane bootstrap + DEV plan/apply remain
+> **Status:** Phase 1 in progress — static Terraform/state/WIF spine implemented; real remote-state control plane and DEV plan/apply remain
 >
-> **Authority:** Canonical architecture memory for the Enterprise Snowflake Platform. Update this file after each meaningful architecture or implementation step.
+> **Authority:** Canonical long-term architecture for the Enterprise Snowflake Platform.
 >
-> **Canonical repository:** `enterprise-snowflake-platform-infra`
+> **Fast handoff:** Read [`CURRENT_CONTEXT.md`](CURRENT_CONTEXT.md) first in a new conversation/session.
 
 ## 1. Project goals
 
 Build a production-grade reusable Snowflake platform reference implementation suitable for real enterprise adoption and Senior/Principal Data Engineering / Snowflake Platform Engineering work.
 
-Key outcomes: clear ownership, repeatable onboarding, stable RAW contracts, metadata-driven technical behaviour, immutable Git SHA promotion, recoverability, reconciliation, freshness/SLOs, observability, cost attribution and multiple production patterns where workloads genuinely differ.
+Key outcomes:
+
+- clear platform/domain ownership;
+- repeatable domain/source onboarding;
+- stable RAW contracts independent of ingestion technology;
+- metadata-driven technical behaviour without hiding business logic;
+- immutable Git SHA promotion;
+- strong DEV/UAT/PROD isolation;
+- recoverability, reconciliation and freshness/SLOs;
+- operational observability and cost attribution;
+- multiple production patterns where workloads genuinely differ.
 
 ## 2. Non-goals
 
 - Do not merge Metric Guard into this project.
 - Do not maximise technology count for appearance.
-- Do not force all ingestion or SCD2 workloads into one implementation.
+- Do not force all ingestion/SCD2 workloads into one implementation.
 - Do not Terraform-manage every Snowflake object.
 - Do not create a YAML programming language for business logic.
 - Do not use DEV/UAT/PROD Git branches.
@@ -24,41 +34,43 @@ Key outcomes: clear ownership, repeatable onboarding, stable RAW contracts, meta
 - Do not introduce Spark Streaming without a concrete requirement.
 - Marketplace Secure Shares are not a core ingestion path.
 - Do not build a custom ITSM platform.
+- Do not require AWS merely to run the Snowflake platform.
+- Do not use OneDrive/SharePoint as live Terraform state storage.
 
-## 3. Architecture principles
+## 3. Core architecture principles
 
 1. Convention over copy/paste.
 2. Configuration for stable technical behaviour; code for genuine business differences.
 3. Domain/project autonomy inside platform guardrails.
-4. Implementation diversity is acceptable; operational standards remain consistent.
-5. RAW contracts isolate ingestion technology from downstream engineering.
-6. Promote the same immutable Git SHA through environments.
-7. Human production authority and machine deployment identity are separate.
-8. Production readiness is defined by recoverability, not deployment success alone.
-9. One object has one authoritative owner.
-10. Git is configuration source of truth; `PLATFORM_CONTROL` stores runtime/operational state.
-11. Prefer deterministic repair over manual PROD DML.
-12. Account, database, schema and warehouse boundaries solve different problems.
-13. Cost attribution is multi-dimensional; do not create database-per-source only for chargeback.
-14. Consumer access is narrower than engineering read access.
-15. Bootstrap identity/state must be isolated from the routine automation that consumes it.
-16. Long-lived CI credentials are avoided when federation is available.
+4. RAW contracts isolate ingestion technology from downstream engineering.
+5. Promote the same immutable Git SHA through environments.
+6. Human identity and machine deployment identity are separate.
+7. Production readiness is defined by recoverability, not deployment success alone.
+8. One object has one authoritative lifecycle owner.
+9. Git is configuration source of truth; `PLATFORM_CONTROL` stores runtime/operational state.
+10. Prefer deterministic repair over manual PROD DML.
+11. Account, database, schema, role and warehouse boundaries solve different problems.
+12. Cost attribution is multi-dimensional; do not create database-per-source only for chargeback.
+13. Consumer access is narrower than engineering read access.
+14. Bootstrap state/identity are isolated from routine automation that consumes them.
+15. Long-lived CI credentials are avoided where workload federation is available.
+16. Terraform state backend selection is an execution concern, not Snowflake domain logic.
 
 ## 4. Repository architecture
 
 | Repository | Responsibility |
 |---|---|
-| `enterprise-snowflake-platform-infra` | account/platform foundation, Terraform, central RBAC/governance/control plane/cost/recovery architecture |
-| `enterprise-snowflake-data-project-framework` | versioned dbt/macros/tests/metadata/reusable delivery + recovery golden path |
-| `enterprise-snowflake-demo-source-systems` | deterministic external source simulation only; stops at source/RAW boundary |
+| `enterprise-snowflake-platform-infra` | Snowflake account/platform foundation, Terraform, central RBAC/governance/control-plane/cost/recovery architecture |
+| `enterprise-snowflake-data-project-framework` | versioned reusable dbt/macros/tests/metadata/delivery/recovery patterns |
+| `enterprise-snowflake-demo-source-systems` | deterministic external-style source simulation only; stops at source/RAW boundary |
 | `enterprise-snowflake-health-analytics` | Health contracts/config/business SQL/tests/semantic/ingestion config |
 | `enterprise-snowflake-transport-analytics` | Transport contracts/config/business SQL/tests/semantic/streaming config |
 
-Detailed target tree: [`architecture/REPOSITORY_LAYOUT.md`](architecture/REPOSITORY_LAYOUT.md).
+Detailed layout: [`architecture/REPOSITORY_LAYOUT.md`](architecture/REPOSITORY_LAYOUT.md).
 
 ## 5. Snowflake account topology
 
-Canonical topology is three Snowflake accounts:
+Canonical topology:
 
 ```text
 Snowflake Organization
@@ -87,13 +99,13 @@ See ADR-018 and [`architecture/ACCOUNT_TOPOLOGY.md`](architecture/ACCOUNT_TOPOLO
 
 ## 6. Database and schema boundary
 
-Analytics database pattern:
+Database pattern:
 
 ```text
 <ENVIRONMENT>_<DOMAIN>
 ```
 
-A database represents environment × governed data product/domain, not a physical source system. Twenty MSSQL/MySQL/API sources do not imply twenty databases.
+A database represents environment × governed data product/domain, not a physical source system.
 
 Stable transformation schemas:
 
@@ -105,22 +117,28 @@ MARTS
 SEMANTIC
 ```
 
-Published consumer schemas are initially:
+Published schemas initially:
 
 ```text
 MARTS
 SEMANTIC
 ```
 
-Source-purpose RAW schemas are created only when a real source is onboarded, for example `RAW_EHR_MSSQL` or `RAW_INSURANCE_API`.
+RAW schemas are introduced when a real source is onboarded, for example:
 
-Personal DEV schema pattern inside `DEV_<DOMAIN>`:
+```text
+RAW_EHR_MSSQL
+RAW_INSURANCE_API
+RAW_VEHICLE_API
+```
+
+Personal DEV schema pattern:
 
 ```text
 <DEVELOPER>_<LAYER>
 ```
 
-PR CI schema pattern inside `CI_<DOMAIN>`:
+PR CI schema pattern:
 
 ```text
 PR_<NUMBER>_<LAYER>
@@ -128,11 +146,11 @@ PR_<NUMBER>_<LAYER>
 
 CI databases publish no human-consumer schemas; domain GUEST roles receive no CI database access.
 
-See ADR-019 and `NAMING_CONVENTIONS.md`.
+See ADR-019.
 
-## 7. RBAC and machine identity model
+## 7. Domain RBAC
 
-Platform human/capability roles:
+Platform capability roles:
 
 ```text
 AR_PLATFORM_READER
@@ -140,7 +158,7 @@ AR_PLATFORM_READER
   -> AR_PLATFORM_ADMIN
 ```
 
-Every domain receives its own hierarchy:
+Every domain receives:
 
 ```text
 AR_<DOMAIN>_GUEST
@@ -149,7 +167,7 @@ AR_<DOMAIN>_GUEST
   -> AR_<DOMAIN>_ADMIN
 ```
 
-Every domain database receives:
+Each domain database receives only its owning domain's hierarchy:
 
 ```text
 DR_<DOMAIN>_ANALYTICS_GUEST
@@ -158,46 +176,45 @@ DR_<DOMAIN>_ANALYTICS_GUEST
   -> DR_<DOMAIN>_ANALYTICS_OWNER
 ```
 
-`GUEST` is authenticated read-only business/consumer access to published schemas only. It is not Snowflake `PUBLIC` and is not anonymous access. Initial GUEST visibility is MARTS + SEMANTIC.
+`GUEST` is authenticated business/consumer read-only access to published schemas only. It is not Snowflake `PUBLIC` and is not anonymous.
 
-`READER` can inspect all stable domain schemas. DEV developers receive WRITE. UAT/PROD developers remain read-only by default. Domain authority never crosses into another domain unless explicitly granted.
+`READER` can inspect all stable domain schemas. DEV developers receive WRITE. UAT/PROD developers remain read-only by default.
 
-Platform Terraform automation is separate from domain roles:
+Domain authority never crosses into another domain unless explicitly granted.
+
+See ADR-020 and [`architecture/RBAC_MODEL.md`](architecture/RBAC_MODEL.md).
+
+## 8. Human identity and employee membership
+
+Terraform defines the RBAC model, privileges and warehouse grants. It does not manage everyday employee membership.
+
+Target enterprise flow:
 
 ```text
-DEV   SU_GITHUB_TERRAFORM_DEV  -> AR_TERRAFORM_DEV
-UAT   SU_GITHUB_TERRAFORM_UAT  -> AR_TERRAFORM_UAT
-PROD  SU_GITHUB_TERRAFORM_PROD -> AR_TERRAFORM_PROD
+Employee / contractor
+    -> Entra ID / Okta group
+        -> SCIM / approved identity provisioning
+            -> AR_<DOMAIN>_<CAPABILITY>
 ```
 
-Routine Terraform roles initially receive only:
+Example:
 
 ```text
-CREATE DATABASE
-CREATE ROLE
-CREATE WAREHOUSE
-MANAGE GRANTS
+SNOWFLAKE_FINANCE_DEVELOPER -> AR_FINANCE_DEVELOPER
 ```
 
-Routine DEV/UAT/PROD Terraform does not activate ACCOUNTADMIN, SYSADMIN or SECURITYADMIN. `MANAGE GRANTS` is broad, so these roles are machine-only and are never human/domain application roles.
+Adding/removing a person from an existing domain should be an identity-governance operation, not a Terraform code change.
 
-Human user lifecycle should come from enterprise SSO/IdP/SCIM rather than employee records in Terraform.
+A **new domain** is different: platform Terraform provisions its standard databases, roles, database roles and warehouses once.
 
-See ADR-020, ADR-023 and [`architecture/RBAC_MODEL.md`](architecture/RBAC_MODEL.md).
-
-## 8. Warehouse and cost boundary
+## 9. Warehouse and cost boundary
 
 Account identifies environment; warehouse identifies domain + workload:
 
 ```text
 WH_<DOMAIN>_QUERY
 WH_<DOMAIN>_TRANSFORM
-```
-
-DEV additionally has:
-
-```text
-WH_<DOMAIN>_CI
+WH_<DOMAIN>_CI   # DEV only
 ```
 
 Current examples:
@@ -212,34 +229,33 @@ WH_TRANSPORT_CI
 WH_PLATFORM_OPS
 ```
 
-GUEST receives QUERY. READER inherits it. DEV DEVELOPER additionally receives TRANSFORM. UAT/PROD ADMIN temporarily receives TRANSFORM until project deployment identity takes over. CI warehouses are project-machine-only.
+GUEST receives QUERY. READER inherits it. DEV DEVELOPER additionally receives TRANSFORM. UAT/PROD ADMIN currently receives TRANSFORM as a transitional human path until project deployment identities are implemented. CI warehouses are machine-only.
 
-Warehouse defaults remain conservative: XSMALL, auto-resume, 60-second auto-suspend, initially suspended, explicit statement timeout, no unnecessary multi-cluster/query acceleration.
+Warehouse defaults: XSMALL, auto-resume, 60-second auto-suspend, initially suspended, explicit statement timeout, no unnecessary multi-cluster/query acceleration.
 
-## 9. Object ownership model
+## 10. Object ownership model
 
 | Object/capability | Authoritative owner |
 |---|---|
-| Organization DEV/UAT/PROD account resources | Platform Infra organization Terraform root |
-| Platform Terraform SERVICE users / WIF trust / `AR_TERRAFORM_<ENV>` | Platform Infra identity bootstrap roots |
-| Domain analytics databases | Routine Terraform / Platform Infra |
-| Stable structural schemas | Routine Terraform / Platform Infra |
-| Domain/platform warehouses | Routine Terraform / Platform Infra |
-| Domain/platform account roles/database roles/grants | Routine Terraform / Platform Infra |
-| Cost controls/tags | Terraform/native platform ownership |
-| `PLATFORM_CONTROL` structure | Routine Terraform / Platform Infra |
-| Shared procedures/tasks/alerts | controlled Snowflake SQL when clearer than Terraform |
+| DEV/UAT/PROD Snowflake account resources | organization Terraform root |
+| platform Terraform SERVICE users / WIF trust / `AR_TERRAFORM_<ENV>` | identity bootstrap roots |
+| domain analytics databases | routine Platform Infra Terraform |
+| stable structural schemas | routine Platform Infra Terraform |
+| domain/platform warehouses | routine Platform Infra Terraform |
+| account roles/database roles/grants | routine Platform Infra Terraform |
+| employee membership | enterprise IdP/SCIM/IAM process |
+| `PLATFORM_CONTROL` structure | routine Platform Infra Terraform |
+| selected shared procedures/tasks/alerts | controlled native Snowflake SQL when clearer than Terraform |
 | staging/intermediate/canonical/marts relations | data project via dbt |
-| snapshots | data project via dbt |
 | reusable technical macros/tests | Framework |
 | project tests/semantic definitions | project + framework primitives |
 | source simulator | Demo Source Systems |
 
 No object is simultaneously authoritative in Terraform and dbt/ad-hoc SQL.
 
-## 10. Terraform roots, state and authentication
+## 11. Terraform roots and machine identity
 
-Current Terraform roots:
+Current lifecycle roots:
 
 ```text
 terraform/stacks/organization/
@@ -253,34 +269,85 @@ terraform/stacks/prod/
 
 ### Organization bootstrap
 
-`organization/` alone uses ORGADMIN and manages DEV/UAT/PROD account resources from `config/organization.yml`. Account resources use a bootstrap SERVICE administrator with RSA public-key material supplied outside Git and `prevent_destroy = true`.
+`organization/` alone uses ORGADMIN and manages DEV/UAT/PROD account resources from `config/organization.yml`. Account resources use `prevent_destroy`.
 
 ### Identity bootstrap
 
-`identity/<env>/` is a separate privileged lifecycle that may activate ACCOUNTADMIN to create the GitHub OIDC Snowflake SERVICE user, OIDC trust and dedicated routine Terraform account role. The service user and role use `prevent_destroy`.
+`identity/<env>/` may activate ACCOUNTADMIN only to establish the routine Terraform machine identity:
 
-Snowflake provider `2.19.0` requires the `USER_ENABLE_DEFAULT_WORKLOAD_IDENTITY` experiment when Terraform manages `default_workload_identity`; that experiment is confined to identity roots.
-
-### Routine account roots
-
-`dev/uat/prod` activate only `AR_TERRAFORM_<ENV>` through root provider aliases `snowflake.objects` and `snowflake.security`. They do not activate Snowflake system roles in routine CI.
-
-### Remote state
-
-Reference backend is Amazon S3 with partial backend configuration:
-
-```hcl
-terraform {
-  backend "s3" {
-    encrypt      = true
-    use_lockfile = true
-  }
-}
+```text
+DEV   SU_GITHUB_TERRAFORM_DEV  -> AR_TERRAFORM_DEV
+UAT   SU_GITHUB_TERRAFORM_UAT  -> AR_TERRAFORM_UAT
+PROD  SU_GITHUB_TERRAFORM_PROD -> AR_TERRAFORM_PROD
 ```
 
-DynamoDB locking is not used. The S3 bucket is an external control-plane prerequisite with versioning, encryption, public-access blocking, restrictive IAM and recovery/audit controls.
+Service users and machine roles use `prevent_destroy`.
 
-State objects are independent:
+### Routine roots
+
+`dev/uat/prod` activate only `AR_TERRAFORM_<ENV>` through `snowflake.objects` and `snowflake.security` provider aliases.
+
+Initial routine account privileges:
+
+```text
+CREATE DATABASE
+CREATE ROLE
+CREATE WAREHOUSE
+MANAGE GRANTS
+```
+
+Do not widen them without a demonstrated requirement from a real plan/apply.
+
+See ADR-021 and ADR-023.
+
+## 12. Terraform remote state
+
+The Snowflake platform is **backend-agnostic**.
+
+Supported reference profiles:
+
+```text
+azurerm -> Azure Blob Storage (Microsoft-first reference)
+s3      -> Amazon S3 (AWS reference)
+```
+
+Terraform backend type cannot be selected by an input variable, so roots contain no committed cloud-specific backend block. Execution uses:
+
+```text
+terraform/backend-profiles/azurerm/backend.tf
+terraform/backend-profiles/s3/backend.tf
+terraform/scripts/select-backend.sh
+```
+
+to materialise an ignored `backend.generated.tf` before remote init.
+
+### Azure Blob reference
+
+```text
+GitHub OIDC
+    -> Microsoft Entra workload federation
+        -> Azure Blob state
+```
+
+Use Entra/OIDC rather than a long-lived client secret. Baseline data-plane access is `Storage Blob Data Contributor` scoped to the state container. Azure Blob supplies native Terraform state locking/consistency behavior.
+
+### S3 reference
+
+```text
+GitHub OIDC
+    -> AWS IAM
+        -> S3 state + .tflock
+```
+
+S3 requires versioning, encryption, public-access blocking and restricted object-prefix access. Terraform uses native `use_lockfile = true`; new deployments do not add deprecated DynamoDB locking.
+
+### OneDrive / SharePoint
+
+OneDrive/SharePoint may store architecture documents, runbooks, approvals and audit evidence. They are not the authoritative live Terraform state backend.
+
+### State boundaries
+
+Whichever backend is chosen:
 
 ```text
 enterprise-snowflake-platform-infra/organization/terraform.tfstate
@@ -292,29 +359,25 @@ enterprise-snowflake-platform-infra/platform/uat/terraform.tfstate
 enterprise-snowflake-platform-infra/platform/prod/terraform.tfstate
 ```
 
-GitHub accesses S3 through AWS OIDC. Snowflake authentication independently uses GitHub OIDC Workload Identity Federation. No static AWS access key, Snowflake password or routine Snowflake private key is required.
+One deployment has one writable source of truth. Changing backend is a controlled Terraform state migration, not a normal toggle.
 
-Snowflake OIDC subjects are pinned to repository + GitHub Environment, for example:
+See ADR-024 and [`architecture/TERRAFORM_STATE_AND_IDENTITY.md`](architecture/TERRAFORM_STATE_AND_IDENTITY.md).
+
+## 13. Metadata-driven design
+
+Metadata configures stable technical behaviour:
 
 ```text
-repo:ruizengalways/enterprise-snowflake-platform-infra:environment:dev
+load/SCD2 strategy
+business/composite key
+source relation
+timestamp/watermark
+tracked columns
+delete/dedup policy
+freshness thresholds
+reconciliation controls
+criticality/recovery targets
 ```
-
-Each account receives a non-empty account-scoped Snowflake OIDC audience supplied at bootstrap/deployment time; the shared `snowflakecomputing.com` audience is intentionally rejected by the workload-identity module.
-
-Terraform CLI `1.16.0` and Snowflake provider `2.19.0` are pinned. Every root commits `.terraform.lock.hcl` with provider checksums for Linux amd64, macOS amd64 and macOS arm64. Static CI uses lock files read-only.
-
-See ADR-021, ADR-022, ADR-023 and [`architecture/TERRAFORM_STATE_AND_IDENTITY.md`](architecture/TERRAFORM_STATE_AND_IDENTITY.md).
-
-## 11. Data project framework design
-
-The framework is a versioned dependency, not a copied folder. It will provide reusable dbt macros/tests, load/SCD2 strategies, reconciliation/freshness/audit contracts, metadata validation, reusable GitHub workflows and rollback/recovery/backfill templates.
-
-Projects upgrade deliberately by release/tag/SHA.
-
-## 12. Metadata-driven design
-
-Metadata configures stable technical behaviour: strategy, key/composite key, source relation, timestamp/watermark, tracked columns, delete/dedup policy, thresholds, reconciliation, quality, freshness, criticality and recovery targets.
 
 Business joins/calculations/domain rules remain explicit SQL/code.
 
@@ -326,7 +389,7 @@ implementation: custom
 
 Custom implementations still participate in contracts, testing, observability, reconciliation, audit and recovery.
 
-## 13. RAW contracts
+## 14. RAW contracts
 
 Project-owned RAW contracts define the ingestion/downstream boundary: source, owner, schema version, entity/table, grain, business key, required columns/types/nullability, source timestamp, CDC semantics, sequence/offset, cadence, retention, classification and breaking-change policy.
 
@@ -341,9 +404,9 @@ batch_id
 source_system
 ```
 
-## 14. Ingestion patterns
+## 15. Ingestion patterns
 
-All implementations converge on project RAW contracts:
+All ingestion implementations converge on project RAW contracts:
 
 ```text
 Synthetic/file/database source ─┐
@@ -352,23 +415,19 @@ Kafka Connector                ─┤
 Openflow CDC                   ─┘
 ```
 
-Transport later compares direct Snowpipe Streaming with Kafka -> Snowflake Kafka Connector -> Snowpipe Streaming using the same logical event contract; normally one path is active.
+Transport later compares direct Snowpipe Streaming with Kafka -> Snowflake Kafka Connector -> Snowpipe Streaming using the same logical event contract.
 
 Health adds Openflow only after the downstream Health pipeline is proven.
 
-## 15. dbt architecture
+## 16. dbt and SCD2 architecture
 
 ```text
 RAW -> staging -> intermediate/canonical -> marts -> semantic
 ```
 
-Use `source()`, `ref()`, generic/singular tests, source freshness, snapshots where appropriate, framework dependencies and environment-aware database/schema resolution. Model SQL never hard-codes DEV/UAT/PROD physical names.
+Use `source()`, `ref()`, tests, source freshness, snapshots where appropriate, framework dependencies and environment-aware resolution. Model SQL never hard-codes physical DEV/UAT/PROD target names.
 
-## 16. SCD2 strategy catalog
-
-Dynamic Tables are excluded for SCD2.
-
-Approved patterns:
+Approved SCD2 patterns:
 
 ```text
 scd2_snapshot
@@ -376,44 +435,42 @@ scd2_merge
 scd2_stream_task
 ```
 
-Tests cover initial/unchanged/changed records, composite keys, multiple changes, duplicates, late/out-of-order data, deletes, idempotency, backfill, partial failure and deterministic history rebuild.
+Dynamic Tables are excluded for SCD2.
 
-## 17. CI/CD lifecycle
+## 17. CI/CD and promotion
 
-Data-project delivery remains:
+Data-project delivery:
 
 ```text
 feature branch
--> personal/shared DEV (DEV account)
--> PR CI (CI_<DOMAIN> in DEV account)
--> review + merge
--> UAT account
+-> personal/shared DEV
+-> PR CI in CI_<DOMAIN>
+-> merge
+-> UAT
 -> approval
--> PROD account
+-> PROD
 -> smoke + regression + DQ + reconciliation
 ```
 
-Platform-infrastructure Terraform now has its first execution spine:
+Exact immutable Git SHA is promoted through environments; no environment branches.
+
+Platform Terraform progression:
 
 ```text
-static CI (all seven roots)
+static CI
+-> selected remote-state control plane
 -> organization bootstrap/import
 -> DEV identity bootstrap
 -> manual DEV remote plan
--> reviewed/protected DEV apply (not enabled yet)
--> UAT identity/plan/apply
--> protected PROD identity/plan/apply
+-> reviewed DEV apply
+-> Snowflake verification
+-> UAT
+-> PROD
 ```
 
-`.github/workflows/terraform-plan-dev.yml` is manual-only and requires GitHub Environment `dev`, AWS OIDC state access and Snowflake OIDC WIF. It performs no apply and uploads no reusable binary plan artifact.
+`.github/workflows/terraform-plan-dev.yml` is manual-only, supports Azure Blob or S3 state, uses Snowflake WIF independently, and performs no apply.
 
-PR close removes ephemeral project CI resources. CI/CD and operational scheduling remain separate concerns.
-
-## 18. Release promotion
-
-One Git history per project; no environment branches. Promote the exact same immutable `git_sha` through DEV -> CI -> UAT -> PROD. Deployment state is recorded in account-local `PLATFORM_CONTROL.DEPLOYMENT` once implemented.
-
-## 19. Production rollback
+## 18. Recovery and rollback
 
 For derived analytics data:
 
@@ -426,21 +483,23 @@ pre-release zero-copy clone
 -> validate + reconcile + resume
 ```
 
-Do not blindly roll back RAW. Correct Git desired state after runtime rollback.
+Do not blindly roll back RAW. Prefer replay, idempotent rerun, backfill, Time Travel, UNDROP, clone recovery, affected-window rebuild and deterministic SCD2 history rebuild over manual PROD DML.
 
-## 20. Data repair/recovery
+## 19. Data quality, reconciliation and freshness
 
-Support bounded retry, checkpoint/watermark, replay, idempotent rerun, backfill, Time Travel, UNDROP, point-in-time/zero-copy clone recovery, affected-window rebuild and deterministic SCD2 history rebuild. Prefer these over manual PROD DML.
+Baseline DQ:
 
-## 21. Data quality
+- not-null;
+- uniqueness;
+- relationships;
+- accepted values;
+- domain assertions;
+- volume checks;
+- SCD2 invariants;
+- schema contracts;
+- reconciliation.
 
-Baseline: not-null, uniqueness, relationships, accepted values, domain assertions, volume checks, SCD2 invariants, schema contracts and reconciliation. dbt tests alone are not full production reconciliation.
-
-## 22. Reconciliation
-
-Support row counts, distinct business-key counts, control totals, min/max business timestamp, watermarks, rejected rows and duplicates across important boundaries. Results go to `PLATFORM_CONTROL.QUALITY.RECONCILIATION_RESULTS` once its first consumer is implemented.
-
-## 23. Freshness
+Reconciliation may include row counts, distinct business-key counts, control totals, min/max timestamps, watermarks, rejected rows and duplicates.
 
 Track separately:
 
@@ -450,19 +509,9 @@ Track separately:
 
 Pipeline success does not imply consumer readiness.
 
-## 24. SLI / SLO / SLA
+## 20. Observability and incident lifecycle
 
-- SLI = measured signal.
-- SLO = internal reliability objective.
-- SLA = optional formal/business commitment.
-
-Dataset readiness may require transformation, DQ, reconciliation, freshness and semantic regression all to pass.
-
-## 25. Observability and incident lifecycle
-
-Start Snowflake-native: account usage, query/warehouse history, dbt artifacts, GitHub Actions and `PLATFORM_CONTROL`.
-
-Monitor freshness, pipelines/tasks, long-running work, dbt failures, DQ/reconciliation, publish readiness, warehouse/query usage, deployment/rollback/recovery, SLO breaches, cost anomalies and orphaned CI resources.
+Start Snowflake-native: account usage, query/warehouse history, dbt artifacts, GitHub Actions and account-local `PLATFORM_CONTROL`.
 
 Incident lifecycle:
 
@@ -472,32 +521,30 @@ DETECT -> TRIAGE -> CONTAIN -> RECOVER -> RECONCILE -> VALIDATE -> RESUME -> CLO
 
 Do not build a custom ITSM system.
 
-## 26. Cost attribution / recovery
+## 21. Cost attribution
 
 Do not use database-per-source as the primary chargeback model.
 
-Use complementary boundaries:
-
 ```text
-Domain storage/recovery       -> domain database (DEV_HEALTH, PROD_TRANSPORT, ...)
-Source/table storage detail   -> schema/table storage metrics
+Domain storage/recovery       -> domain database
+Source/table storage detail   -> schema/table metrics
 Compute                       -> domain/workload warehouse + query tags
 Serverless ingestion/services -> Snowflake service usage history
 ```
 
-Query tags should eventually carry domain/source/pipeline/dataset/run/release metadata so compute can be attributed below warehouse level.
+Structured query tags should eventually carry domain/source/pipeline/dataset/run/release metadata.
 
-Cost monitors, budgets and tags are Phase 1 hardening after required administrative/edition boundaries are verified.
+Cost monitors/budgets/tags remain Phase 1 hardening after live administrative boundaries are verified.
 
-## 27. Semantic Views
+## 22. Semantic Views
 
 Use Snowflake-native Semantic Views; Cube is excluded. Semantic definitions participate in project release/regression lifecycle where practical.
 
-## 28. Project/domain onboarding
+## 23. New-domain onboarding
 
-A future Finance project should primarily add project metadata, RAW contracts/source mappings/domain SQL/tests/semantic definitions and source-specific ingestion config.
+A future Finance domain should primarily add metadata/contracts/domain SQL/tests/semantic definitions and source-specific ingestion config.
 
-Platform onboarding derives:
+Platform onboarding derives standard resources:
 
 ```text
 DEV_FINANCE
@@ -510,32 +557,71 @@ AR_FINANCE_READER
 AR_FINANCE_DEVELOPER
 AR_FINANCE_ADMIN
 
+DR_FINANCE_ANALYTICS_GUEST/READ/WRITE/OWNER
+
 WH_FINANCE_QUERY
 WH_FINANCE_TRANSFORM
-WH_FINANCE_CI   # DEV only
+WH_FINANCE_CI
 ```
+
+Employee membership then flows through IdP/SCIM rather than per-user Terraform changes.
 
 Adding another physical Finance source normally adds source metadata/RAW structures, not another environment database or bespoke RBAC framework.
 
-Projects do not reimplement generic CI/CD, SCD2, reconciliation, freshness, audit, recovery or Terraform modules.
-
-## 29. Implementation roadmap
+## 24. Implementation roadmap
 
 - **Phase 0 — Architecture:** complete.
-- **Phase 1 — Platform Foundation:** **in progress**; account/domain infrastructure, organization bootstrap, remote-state contract, Terraform WIF identities and static seven-root CI are implemented; external control-plane provisioning and real DEV/UAT/PROD execution remain.
+- **Phase 1 — Platform Foundation:** **in progress**; static organization/account/domain-RBAC/warehouse/state-adapter/WIF foundation is implemented; real remote state, Snowflake bootstrap/apply, schema lifecycle and cost hardening remain.
 - **Phase 2 — Framework Foundation:** metadata validation, dbt package, environment macros, basic loads, reusable CI, operational logging.
-- **Phase 3 — Thin CI/CD spine:** prove DEV -> PR CI -> UAT -> PROD with exact SHA, history/recovery point/cleanup/rollback skeleton.
+- **Phase 3 — Thin CI/CD spine:** DEV -> PR CI -> UAT -> PROD with exact SHA, history/recovery point/cleanup/rollback skeleton.
 - **Phase 4 — Health vertical slice:** deterministic Health RAW -> semantic with contracts/DQ/reconciliation/freshness/recovery/SCD2.
-- **Phase 5 — Transport streaming:** direct Snowpipe Streaming then Kafka Connector, same RAW event contract.
-- **Phase 6 — Complete pattern catalog:** approved load/SCD2 patterns, late data/dedup/replay/backfill/schema evolution.
+- **Phase 5 — Transport streaming:** direct Snowpipe Streaming then Kafka Connector using the same RAW event contract.
+- **Phase 6 — Pattern catalog:** approved load/SCD2 patterns, late data/dedup/replay/backfill/schema evolution.
 - **Phase 7 — Production hardening:** masking/RAP/classification/cost/drift/health views/alerts/recovery drills/SLO reporting.
 - **Phase 8 — Openflow:** SQL Server -> Openflow CDC -> Health RAW without downstream redesign.
 
-## 30. ADR index and current status
+## 25. Current Phase 1 implementation status
+
+Completed in source/static CI:
+
+- [x] Terraform CLI `1.16.0` and Snowflake provider `2.19.0` pinned.
+- [x] committed provider lock files for all seven roots.
+- [x] three-account DEV/UAT/PROD design.
+- [x] organization Terraform root with ORGADMIN isolation.
+- [x] per-account identity roots and Snowflake GitHub OIDC WIF service-user configuration.
+- [x] dedicated routine `AR_TERRAFORM_<ENV>` roles.
+- [x] environment × domain databases.
+- [x] domain GUEST/READER/DEVELOPER/ADMIN account roles.
+- [x] domain GUEST/READ/WRITE/OWNER database roles.
+- [x] GUEST limited to MARTS/SEMANTIC and no CI database access.
+- [x] per-domain QUERY/TRANSFORM warehouses and DEV CI warehouses.
+- [x] backend-independent Terraform roots.
+- [x] Azure Blob backend profile.
+- [x] S3 backend profile with native lockfile.
+- [x] runtime backend selector.
+- [x] static CI for seven roots and both backend declarations.
+- [x] manual DEV plan workflow supporting Azure Blob or S3 state + Snowflake WIF.
+- [x] employee-membership boundary documented as IdP/SCIM, not Terraform user grants.
+- [x] `docs/CURRENT_CONTEXT.md` fast handoff entrypoint.
+
+Still required before Phase 1 exit:
+
+- [ ] provision one real remote-state control plane: Azure Blob **or** S3;
+- [ ] configure the matching GitHub OIDC trust/permissions;
+- [ ] securely execute/import Snowflake organization accounts;
+- [ ] apply DEV identity bootstrap against a live Snowflake account;
+- [ ] configure GitHub Environment `dev`;
+- [ ] run/review the first real DEV remote plan;
+- [ ] apply DEV under review and verify effective privileges/objects in Snowflake;
+- [ ] implement personal DEV and PR CI schema lifecycle outside long-lived platform state;
+- [ ] add query-tag/cost-control/resource-monitor baseline where supported;
+- [ ] prove UAT before protected PROD automation.
+
+## 26. ADR index
 
 | ADR | Decision | Status |
 |---|---|---|
-| ADR-001 | five repository architecture | Accepted |
+| ADR-001 | five-repository architecture | Accepted |
 | ADR-002 | two-account topology | Superseded by ADR-018 |
 | ADR-003 | capability account roles + database roles | Accepted; refined by ADR-020 |
 | ADR-004 | selective Terraform / one owner | Accepted |
@@ -547,63 +633,25 @@ Projects do not reimplement generic CI/CD, SCD2, reconciliation, freshness, audi
 | ADR-019 | environment × data-product database boundary | Accepted |
 | ADR-020 | domain GUEST access + workload warehouses | Accepted |
 | ADR-021 | isolated ORGADMIN organization bootstrap | Accepted |
-| ADR-022 | S3 remote state + independent lifecycle boundaries | Accepted |
-| ADR-023 | GitHub OIDC Snowflake Terraform workload identity | Accepted |
+| ADR-022 | S3-only remote-state reference | Superseded by ADR-024 |
+| ADR-023 | GitHub OIDC Terraform identity | Accepted |
+| ADR-024 | Azure Blob/S3 backend adapter model | Accepted |
 
-### Phase 1 completed in source control / static CI
+## 27. Immediate next step
 
-- [x] Terraform CLI `1.16.0` and Snowflake provider `2.19.0` pinned.
-- [x] `.terraform.lock.hcl` committed for all seven roots with multi-platform checksums.
-- [x] CI enforces lock files with `terraform init -lockfile=readonly`.
-- [x] `terraform fmt`, init and validate successfully execute across all seven roots.
-- [x] GitHub Actions upgraded to current Node-24-capable checkout/setup-terraform actions.
-- [x] `config/organization.yml` plus `config/environments/{dev,uat,prod}.yml` implemented.
-- [x] Organization Terraform root implemented with ORGADMIN isolation and `prevent_destroy`.
-- [x] S3 remote-state contract accepted with native S3 lockfiles and seven independent state keys.
-- [x] GitHub AWS OIDC is the state-access design; static AWS keys are excluded.
-- [x] `workload-identity` module implemented.
-- [x] identity bootstrap roots implemented for DEV/UAT/PROD.
-- [x] Snowflake Terraform SERVICE users and dedicated `AR_TERRAFORM_<ENV>` roles defined with repository+environment OIDC subjects.
-- [x] shared `snowflakecomputing.com` audience rejected; account-scoped audience required as runtime/bootstrap configuration.
-- [x] routine DEV/UAT/PROD provider authority switched away from SYSADMIN/SECURITYADMIN to `AR_TERRAFORM_<ENV>`.
-- [x] manual-only secretless `terraform-plan-dev.yml` implemented for AWS OIDC state + Snowflake OIDC WIF.
-- [x] `analytics-environment`, `warehouse`, `platform-control`, `rbac` modules implemented.
-- [x] DEV databases: `DEV_HEALTH`, `CI_HEALTH`, `DEV_TRANSPORT`, `CI_TRANSPORT`.
-- [x] UAT databases: `UAT_HEALTH`, `UAT_TRANSPORT`.
-- [x] PROD databases: `PROD_HEALTH`, `PROD_TRANSPORT`.
-- [x] account-local `PLATFORM_CONTROL` structural schemas.
-- [x] database -> owning-domain mapping prevents cross-domain database roles.
-- [x] domain `GUEST -> READER -> DEVELOPER -> ADMIN` hierarchy implemented.
-- [x] database `GUEST -> READ -> WRITE -> OWNER` hierarchy implemented.
-- [x] GUEST restricted to configured published schemas (`MARTS`, `SEMANTIC`) and receives no CI database access.
-- [x] per-domain QUERY/TRANSFORM warehouses implemented; DEV adds per-domain CI warehouses.
-- [x] DEV developers WRITE; UAT/PROD developers read-only by default.
-- [x] Kafka, Snowpipe Streaming, Openflow and broad dbt remain intentionally deferred.
+Do not start Kafka, Snowpipe Streaming, Openflow or broad dbt modelling yet.
 
-Still required before Phase 1 exit:
+Next execution order:
 
-- [ ] provision the real S3 state control plane with bucket versioning/encryption/public-access blocking and narrowly scoped AWS OIDC IAM;
-- [ ] securely execute organization bootstrap or import existing DEV/UAT/PROD accounts;
-- [ ] execute DEV identity bootstrap with the real account-scoped Snowflake OIDC audience;
-- [ ] configure GitHub Environment `dev` values and run the first real remote DEV plan;
-- [ ] review/apply DEV and verify Snowflake objects/grants/least-privilege sufficiency;
-- [ ] add a protected DEV apply workflow only after successful plan review;
-- [ ] prove UAT identity/plan/apply before enabling protected PROD automation;
-- [ ] implement personal DEV and PR CI schema lifecycle outside long-lived Terraform state;
-- [ ] add cost-control/resource-monitor/query-tagging baseline where administrative/edition boundaries permit.
-
-## 31. Next implementation step
-
-Continue Phase 1 with external control-plane bootstrap and the first real DEV execution:
-
-1. provision/configure the S3 state bucket and GitHub-to-AWS OIDC IAM role using the ADR-022 state prefixes;
-2. execute or import Snowflake DEV/UAT/PROD accounts under controlled organization bootstrap;
-3. execute `identity/dev` under controlled ACCOUNTADMIN using an account-scoped Snowflake OIDC audience;
-4. configure GitHub Environment `dev` variables for state, account identity and audience;
-5. run the manual DEV remote plan and inspect every resource/grant;
-6. adjust `AR_TERRAFORM_DEV` privileges only if a concrete Snowflake resource proves another privilege is required;
-7. add protected DEV apply, apply, then verify actual roles/databases/schemas/warehouses/grants in Snowflake;
-8. add cost/query-tag baseline and personal/PR schema lifecycle;
-9. repeat for UAT; only then enable protected PROD plan/apply.
-
-Do **not** start Kafka, Snowpipe Streaming, Openflow or broad dbt modelling during this step.
+```text
+choose/provision one real remote-state backend
+-> Snowflake organization bootstrap/import
+-> DEV identity bootstrap
+-> configure GitHub Environment dev
+-> first real DEV remote plan
+-> reviewed DEV apply
+-> Snowflake-side verification
+-> personal/PR schema lifecycle + cost baseline
+-> UAT proof
+-> protected PROD path
+```
