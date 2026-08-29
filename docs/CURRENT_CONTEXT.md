@@ -17,6 +17,7 @@
 - Human and machine identities are separate.
 - Ingestion technology stops at the project-owned stable RAW contract.
 - Canonical layer vocabulary is `RAW -> STAGING -> INTERMEDIATE/CANONICAL -> MARTS -> SEMANTIC`; framework docs do not introduce separate Bronze/Silver physical layers.
+- Shared account-local operational state must enforce domain isolation; caller convention is not an authorization boundary.
 - Prefer Snowflake-native primitives before custom runtime state/orchestration.
 - Dynamic Tables are optional execution/projection choices; classic regular-table paths remain available.
 - Do not start Kafka Connector, direct Snowpipe Streaming or Openflow demos before live DEV foundation proof.
@@ -266,7 +267,7 @@ run 33247440078 -> all 13 jobs SUCCESS
 
 This validates fmt, all ten Terraform roots and both backend profiles. It does not prove live authorization.
 
-## 9. RAW capture and runtime contract
+## 9. RAW capture, runtime state and the open control-access boundary
 
 Capture archetypes:
 
@@ -292,23 +293,23 @@ Source fidelity sets the maximum downstream history guarantee. Full snapshots ne
 
 Framework documentation uses RAW as the authoritative evidence-layer term. Bronze/Silver are not additional platform schemas.
 
-Mutable source progress lives in:
+Mutable source progress and operational ledgers are structurally implemented under:
 
 ```text
 PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT
+PLATFORM_CONTROL.OPERATIONS.PIPELINE_RUN
+PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECK_RESULT
+PLATFORM_CONTROL.OPERATIONS.ADVANCE_PIPELINE_CHECKPOINT(...)
 ```
 
-Operational ledgers:
+Framework SQL primitives can read/write these contracts. However, **end-to-end project runtime authorization is not complete**: current domain deployment roles do not yet have a domain-scoped access surface to shared `PLATFORM_CONTROL.OPERATIONS` state.
+
+Do not fix this with broad cross-domain table DML. Health must be unable to read/write Transport operational rows and vice versa. The current owner-rights checkpoint procedure accepts `project_code` from the caller, so unrestricted procedure usage without an additional domain guard would also be unsafe.
+
+This open design/implementation requirement is documented in:
 
 ```text
-PIPELINE_RUN
-PIPELINE_CHECK_RESULT
-```
-
-Native procedure:
-
-```text
-ADVANCE_PIPELINE_CHECKPOINT(...)
+docs/architecture/OPERATIONAL_CONTROL_ACCESS.md
 ```
 
 Do not duplicate Snowflake-owned Stream offsets or Task run history into parallel framework state.
@@ -434,13 +435,16 @@ historical ADR phase wording -> explicit current implementation status
 
 `PLATFORM_CONTROL` native-SQL deployment documentation and ADR-032 were reviewed and found consistent with current ownership/deployment boundaries; no change was required.
 
-Framework pattern/product assertions were also checked against current Snowflake documentation: ADAPTIVE Dynamic Table refresh is GA as of 2026-07-30; Data Quality Monitoring remains Enterprise Edition; Stream repeatable-read/offset-on-commit semantics match the framework pattern; Snowflake's current decision guidance keeps SCD2 history on Streams + Tasks rather than Dynamic Tables.
+The audit also surfaced the domain-scoped operational control access gap described above. That is an implementation/design blocker, not merely stale documentation.
+
+Framework pattern/product assertions were checked against current Snowflake documentation: ADAPTIVE Dynamic Table refresh is GA as of 2026-07-30; Data Quality Monitoring remains Enterprise Edition; Stream repeatable-read/offset-on-commit semantics match the framework pattern; Snowflake's current decision guidance keeps SCD2 history on Streams + Tasks rather than Dynamic Tables.
 
 ## 13. What is still genuinely incomplete
 
 Do **not** claim production/live completion for any of the following:
 
 ```text
+domain-scoped PLATFORM_CONTROL operational read/write API + RBAC bridge
 real Azure Blob/S3 Terraform state control plane
 real DEV/UAT/PROD Snowflake account bootstrap/import
 identity/dev live apply
@@ -460,21 +464,31 @@ Kafka/direct Snowpipe Streaming/Openflow implementation
 
 ## 14. Next execution gate
 
+Work that can be completed before a real cloud/Snowflake environment:
+
 ```text
-1. provision/select authoritative remote state backend
-2. bootstrap/import Snowflake accounts
-3. bootstrap identity/dev
-4. reviewed platform/dev plan/apply
-5. verify DEV RBAC/warehouses/PLATFORM_CONTROL
-6. bootstrap project-identity/dev
-7. configure Health/Transport GitHub Environments ci + dev
-8. prove real PR workspace WIF create/drop
-9. prove immutable reviewed-main SHA DEV deployment
-10. prove unmerged side-branch SHA rejection
-11. execute deterministic SCD2 test in real Snowflake
-12. repeat controlled lifecycle for UAT
-13. repeat protected lifecycle for PROD
-14. only then start streaming-ingestion comparison
+1. choose and implement domain-scoped PLATFORM_CONTROL operational access
+2. add static security/contract tests proving no cross-domain control-state path
+```
+
+Then live control-plane proof:
+
+```text
+3. provision/select authoritative remote state backend
+4. bootstrap/import Snowflake accounts
+5. bootstrap identity/dev
+6. reviewed platform/dev plan/apply
+7. verify DEV RBAC/warehouses/PLATFORM_CONTROL
+8. bootstrap project-identity/dev
+9. configure Health/Transport GitHub Environments ci + dev
+10. prove real PR workspace WIF create/drop
+11. prove immutable reviewed-main SHA DEV deployment
+12. prove unmerged side-branch SHA rejection
+13. prove HEALTH cannot access TRANSPORT operational state and vice versa
+14. execute deterministic SCD2 test in real Snowflake
+15. repeat controlled lifecycle for UAT
+16. repeat protected lifecycle for PROD
+17. only then start streaming-ingestion comparison
 ```
 
 Primary references:
@@ -483,6 +497,7 @@ Primary references:
 - `docs/architecture/ACCOUNT_TOPOLOGY.md`
 - `docs/architecture/RBAC_MODEL.md`
 - `docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md`
+- `docs/architecture/OPERATIONAL_CONTROL_ACCESS.md`
 - `docs/architecture/REPOSITORY_LAYOUT.md`
 - `docs/standards/TERRAFORM_STANDARDS.md`
 - `docs/runbooks/terraform-platform-bootstrap.md`
