@@ -2,34 +2,33 @@
 
 ## Status
 
-Phase 1 executable baseline. The platform targets three Snowflake accounts: DEV, UAT and PROD. Organization account bootstrap, per-account Terraform workload-identity bootstrap, S3 remote-state contracts, and routine account roots are implemented in source. Real infrastructure bootstrap/plan/apply remains gated on external account/state configuration.
+Phase 1 source/static-CI baseline. The platform targets three Snowflake accounts: DEV, UAT and PROD. Organization bootstrap, per-account Terraform identities, per-environment project deployment identities, DEV PR-CI identities, selectable Azure Blob/S3 state profiles and routine account roots are implemented in source. Real infrastructure bootstrap/plan/apply remains pending.
 
-## Organisation topology
+## Organization topology
 
 ```text
 Snowflake Organization
-│
 ├── DEV account
 │   ├── DEV_HEALTH
 │   ├── CI_HEALTH
 │   ├── DEV_TRANSPORT
 │   ├── CI_TRANSPORT
 │   └── PLATFORM_CONTROL
-│
 ├── UAT account
 │   ├── UAT_HEALTH
 │   ├── UAT_TRANSPORT
 │   └── PLATFORM_CONTROL
-│
 └── PROD account
     ├── PROD_HEALTH
     ├── PROD_TRANSPORT
     └── PLATFORM_CONTROL
 ```
 
-Account isolation is the lifecycle/security boundary. Database isolation is environment × data-product/domain ownership plus storage/recovery boundary. Warehouse isolation is domain × workload compute/cost boundary.
+Account isolation is the environment/security lifecycle boundary. Database isolation is environment × governed domain/data product. Warehouse isolation is domain × workload compute/cost.
 
-## Bootstrap layers
+CI is not a fourth account. PR CI stays in DEV with separate `CI_<DOMAIN>` databases and `WH_<DOMAIN>_CI` warehouses.
+
+## Bootstrap and lifecycle layers
 
 ### Organization bootstrap
 
@@ -37,11 +36,9 @@ Account isolation is the lifecycle/security boundary. Database isolation is envi
 terraform/stacks/organization/
 ```
 
-is the only Terraform root using `ORGADMIN`. It manages DEV/UAT/PROD account resources from `config/organization.yml`.
+This is the only root using ORGADMIN. It creates/imports DEV/UAT/PROD account resources from `config/organization.yml`. Account lifecycle has destructive-change protection and must be reviewed explicitly.
 
-Account creation uses a bootstrap-only SERVICE administrator with RSA public-key input supplied outside Git. Account resources have `prevent_destroy = true`. DEV/UAT/PROD routine roots do not use ORGADMIN.
-
-### Per-account Terraform identity bootstrap
+### Platform Terraform identity bootstrap
 
 ```text
 terraform/stacks/identity/dev/
@@ -49,7 +46,7 @@ terraform/stacks/identity/uat/
 terraform/stacks/identity/prod/
 ```
 
-are separate privileged lifecycles that create:
+Create:
 
 ```text
 DEV   SU_GITHUB_TERRAFORM_DEV  -> AR_TERRAFORM_DEV
@@ -57,13 +54,9 @@ UAT   SU_GITHUB_TERRAFORM_UAT  -> AR_TERRAFORM_UAT
 PROD  SU_GITHUB_TERRAFORM_PROD -> AR_TERRAFORM_PROD
 ```
 
-Identity bootstrap may activate `ACCOUNTADMIN`; routine platform Terraform does not. Keeping identity state separate prevents normal automation from owning the resources needed to authenticate itself.
+Identity bootstrap may activate ACCOUNTADMIN; routine platform Terraform does not.
 
-See ADR-021 and ADR-023.
-
-## Routine account Terraform
-
-Routine roots:
+### Routine platform state
 
 ```text
 terraform/stacks/dev/
@@ -71,7 +64,7 @@ terraform/stacks/uat/
 terraform/stacks/prod/
 ```
 
-activate only their environment-specific `AR_TERRAFORM_<ENV>` role. Initial account privileges are:
+These activate only their environment-specific `AR_TERRAFORM_<ENV>` role. Initial routine account privileges are:
 
 ```text
 CREATE DATABASE
@@ -80,13 +73,36 @@ CREATE WAREHOUSE
 MANAGE GRANTS
 ```
 
-Real DEV plan/apply is the privilege-verification gate; static Terraform validation cannot prove Snowflake authorization sufficiency.
+Static Terraform validation cannot prove these privileges are sufficient in a live account. The first DEV plan/apply is the privilege-verification gate.
 
-## Remote-state topology
+### Project workload identity bootstrap
 
-The reference control-plane backend is S3 with encrypted state, native S3 lockfiles and bucket versioning.
+```text
+terraform/stacks/project-identity/dev/
+terraform/stacks/project-identity/uat/
+terraform/stacks/project-identity/prod/
+```
 
-State is separated from Snowflake account topology so a broken Snowflake account does not remove the state needed to recover it:
+These run only after the matching platform state has created the target machine roles.
+
+DEV creates:
+
+```text
+SU_GITHUB_<DOMAIN>_CI     -> AR_<DOMAIN>_CI
+SU_GITHUB_<DOMAIN>_DEPLOY -> AR_<DOMAIN>_DEPLOY
+```
+
+UAT/PROD create:
+
+```text
+SU_GITHUB_<DOMAIN>_DEPLOY -> AR_<DOMAIN>_DEPLOY
+```
+
+The project identity roots own service-user WIF trust + assignment only; role capabilities remain owned by platform RBAC Terraform.
+
+## Terraform state topology
+
+There are ten independent lifecycle states:
 
 ```text
 organization
@@ -96,29 +112,31 @@ identity/prod
 platform/dev
 platform/uat
 platform/prod
+project-identity/dev
+project-identity/uat
+project-identity/prod
 ```
 
-GitHub accesses the state bucket through AWS OIDC. Snowflake authentication independently uses GitHub OIDC WIF. No static AWS access key or routine Snowflake password/private key is part of the design.
+Per-environment dependency:
 
-See ADR-022 and `TERRAFORM_STATE_AND_IDENTITY.md`.
+```text
+identity/<env>
+  -> platform/<env>
+      -> project-identity/<env>
+```
 
-## Why CI stays in DEV
+Remote state is backend-selectable:
 
-CI is ephemeral and repository-driven. A fourth CI account would add account-level identity/state/administration without enough benefit at this stage.
+```text
+azurerm -> Azure Blob Storage (Microsoft-first reference)
+s3      -> Amazon S3 (AWS alternative)
+```
 
-CI therefore shares the DEV account while remaining isolated through:
-
-- `CI_<DOMAIN>` databases;
-- PR-specific schemas;
-- dedicated `WH_<DOMAIN>_CI` warehouses;
-- later dedicated **project CI** workload identities;
-- explicit cleanup lifecycle.
-
-The platform-infrastructure Terraform identity is not the future project/dbt CI identity.
+A deployment chooses one authoritative writable state backend. GitHub OIDC access to the state backend is independent from GitHub OIDC/Snowflake WIF used for Snowflake authentication.
 
 ## Domain access model
 
-Each domain has independent roles:
+Each domain has an independent human role hierarchy:
 
 ```text
 AR_<DOMAIN>_GUEST
@@ -127,41 +145,23 @@ AR_<DOMAIN>_GUEST
   -> AR_<DOMAIN>_ADMIN
 ```
 
-`GUEST` is authenticated read-only consumer access and initially sees only:
+`GUEST` is authenticated published-data read-only access and initially sees only `MARTS` and `SEMANTIC`. `READER` can inspect all stable layers. DEV `DEVELOPER` receives WRITE + transform compute. UAT/PROD human roles receive no permanent transform warehouse grant in the baseline.
+
+Routine stable delivery uses the separate machine role:
 
 ```text
-MARTS
-SEMANTIC
+AR_<DOMAIN>_DEPLOY
 ```
 
-`READER` sees all stable domain layers. Health roles never imply Transport access and vice versa.
-
-See ADR-020 and `RBAC_MODEL.md`.
+Emergency human UAT/PROD transform execution is JIT/break-glass through enterprise identity governance.
 
 ## DEV account
 
-Stable development databases:
+Stable databases:
 
 ```text
 DEV_HEALTH
 DEV_TRANSPORT
-```
-
-Stable transformation schemas:
-
-```text
-STAGING
-INTERMEDIATE
-CANONICAL
-MARTS
-SEMANTIC
-```
-
-Personal schemas are not Terraform-managed. Example inside `DEV_HEALTH`:
-
-```text
-ALICE_STAGING
-ALICE_MARTS
 ```
 
 CI databases:
@@ -171,9 +171,29 @@ CI_HEALTH
 CI_TRANSPORT
 ```
 
-Terraform creates the CI databases but not ephemeral PR schemas. Delivery workflows later create/remove names such as `PR_123_STAGING`.
+Stable schemas:
 
-DEV domain warehouses:
+```text
+STAGING
+INTERMEDIATE
+CANONICAL
+MARTS
+SEMANTIC
+```
+
+Personal schemas are created outside Terraform using the convention:
+
+```text
+<DEVELOPER>_<LAYER>
+```
+
+PR schemas are also outside long-lived Terraform state:
+
+```text
+PR_<NUMBER>_<LAYER>
+```
+
+DEV warehouses:
 
 ```text
 WH_HEALTH_QUERY
@@ -188,21 +208,12 @@ WH_PLATFORM_OPS
 Access intent:
 
 ```text
-AR_HEALTH_GUEST        -> WH_HEALTH_QUERY
-AR_HEALTH_DEVELOPER    -> WH_HEALTH_TRANSFORM
-AR_TRANSPORT_GUEST     -> WH_TRANSPORT_QUERY
-AR_TRANSPORT_DEVELOPER -> WH_TRANSPORT_TRANSFORM
+GUEST/READER          -> QUERY
+DEV DEVELOPER         -> TRANSFORM
+AR_<DOMAIN>_CI        -> CI
+AR_<DOMAIN>_DEPLOY    -> TRANSFORM
+AR_PLATFORM_ENGINEER  -> PLATFORM_OPS
 ```
-
-READER inherits GUEST query access. CI warehouses are reserved for later project CI identities.
-
-Platform infrastructure automation uses:
-
-```text
-SU_GITHUB_TERRAFORM_DEV -> AR_TERRAFORM_DEV
-```
-
-The manual `Terraform Plan DEV` workflow is the first remote execution path, but it cannot run until the real S3/AWS OIDC and Snowflake WIF environment values are configured.
 
 ## UAT account
 
@@ -211,9 +222,8 @@ Databases:
 ```text
 UAT_HEALTH
 UAT_TRANSPORT
+PLATFORM_CONTROL
 ```
-
-UAT is a separate production-like account so account-scoped RBAC, identity, integrations, parameters and operational configuration can be tested before PROD.
 
 Warehouses:
 
@@ -225,9 +235,9 @@ WH_TRANSPORT_TRANSFORM
 WH_PLATFORM_OPS
 ```
 
-Human developers are read-only by default. GUEST receives query compute; domain ADMIN currently receives transform compute until project deployment workload identities are implemented.
+UAT exists as a separate production-like account so account-scoped RBAC, workload identity, integrations and operations can be proven before PROD.
 
-Platform infrastructure automation uses `SU_GITHUB_TERRAFORM_UAT -> AR_TERRAFORM_UAT`, but no UAT remote plan/apply workflow is enabled until DEV is proven.
+Human developers remain read-only by default. Routine transform delivery is machine-only through `AR_<DOMAIN>_DEPLOY`; no permanent human ADMIN transform grant is part of the baseline.
 
 ## PROD account
 
@@ -236,6 +246,7 @@ Databases:
 ```text
 PROD_HEALTH
 PROD_TRANSPORT
+PLATFORM_CONTROL
 ```
 
 Warehouses:
@@ -248,21 +259,19 @@ WH_TRANSPORT_TRANSFORM
 WH_PLATFORM_OPS
 ```
 
-Query and transform compute are deliberately separated for workload isolation, cost attribution and operational control. Human developers remain read-only by default.
-
-Platform infrastructure automation uses `SU_GITHUB_TERRAFORM_PROD -> AR_TERRAFORM_PROD`. PROD planning/apply remains disabled until DEV and UAT are proven and GitHub Environment protection is in place.
+Human developers remain read-only by default. Stable project deployment uses the protected project GitHub Environment `prod` and `SU_GITHUB_<DOMAIN>_DEPLOY -> AR_<DOMAIN>_DEPLOY`.
 
 ## Database boundary and many physical sources
 
-A domain may ingest many MSSQL, MySQL, API, file or streaming sources without creating one database per source.
+A governed domain may ingest many MSSQL, MySQL, API, file or streaming sources without creating one database per source.
 
 Example:
 
 ```text
 PROD_HEALTH
-├── RAW_EHR_MSSQL          # later, when source onboarding requires it
-├── RAW_BOOKING_MYSQL      # later
-├── RAW_INSURANCE_API      # later
+├── RAW_EHR_MSSQL       # only when source onboarding creates it
+├── RAW_BOOKING_MYSQL   # later
+├── RAW_INSURANCE_API   # later
 ├── STAGING
 ├── INTERMEDIATE
 ├── CANONICAL
@@ -270,11 +279,11 @@ PROD_HEALTH
 └── SEMANTIC
 ```
 
-The domain database is the ownership/storage/recovery boundary. Source-level cost attribution additionally uses warehouses, query tags and Snowflake usage/storage metadata.
+The domain database is the ownership/storage/recovery boundary. Source-level cost attribution additionally uses query tags, warehouses and Snowflake usage/storage histories.
 
 ## `PLATFORM_CONTROL`
 
-Every account owns an independent `PLATFORM_CONTROL` database with:
+Every account owns an independent `PLATFORM_CONTROL` database with structural schemas:
 
 ```text
 DEPLOYMENT
@@ -283,30 +292,39 @@ OBSERVABILITY
 OPERATIONS
 ```
 
-Account-local operational state avoids making DEV/UAT/PROD availability depend on a central cross-account control database. Cross-account reporting can aggregate later.
+Native operational SQL currently owns checkpoint/run/check-result tables and the checkpoint advancement procedure inside this Terraform-created structural boundary.
+
+Account-local operational state avoids making DEV/UAT/PROD runtime availability depend on a central cross-account control database.
 
 ## Retention baseline
 
-Analytics/control databases initially use one day of Time Travel retention for portability and cost control. Organization account deletion grace is separately configured: DEV/UAT currently 7 days and PROD 30 days.
+Analytics/control databases initially use one day of Time Travel retention for portability and cost control. Account deletion grace remains separately configured through the organization lifecycle.
 
-## Ownership
+## Ownership boundary
 
-- Organization bootstrap owns DEV/UAT/PROD account resources and uses isolated ORGADMIN authority.
-- Identity bootstrap owns platform Terraform service users, WIF trust and `AR_TERRAFORM_<ENV>` roles.
-- Routine account Terraform owns domain databases, stable schemas, domain warehouses, structural `PLATFORM_CONTROL`, capability roles, database roles and grants.
-- Personal DEV and PR CI schema lifecycle is not long-lived Terraform state.
-- dbt owns transformation relations inside domain databases in later phases.
-- Human user lifecycle comes from enterprise identity/SSO/SCIM rather than employee records in Terraform.
+- organization bootstrap owns Snowflake account resources;
+- identity roots own platform Terraform service users/WIF;
+- routine platform roots own domain databases, stable schemas, warehouses, role models and structural `PLATFORM_CONTROL`;
+- project-identity roots own project CI/deployment service-user WIF bindings;
+- framework/project workflows own ephemeral PR schema lifecycle and project delivery execution;
+- dbt/project code owns transformation relations created inside its granted boundary;
+- employee lifecycle belongs to enterprise IdP/SCIM.
 
-## Apply gate
+## Live execution gate
 
-The source foundation is ready for the first real execution sequence:
+```text
+1. provision/select one authoritative remote-state backend
+2. bootstrap/import Snowflake accounts
+3. bootstrap identity/dev
+4. reviewed platform/dev plan/apply
+5. verify DEV databases/schemas/RBAC/warehouses/PLATFORM_CONTROL
+6. bootstrap project-identity/dev
+7. configure Health/Transport GitHub Environments ci + dev
+8. prove real PR workspace WIF create/drop
+9. prove immutable main-history DEV deployment
+10. execute live SCD2 behavioral oracle
+11. progress UAT with the same lifecycle order
+12. progress protected PROD
+```
 
-1. provision the S3 state bucket/control plane with versioning, encryption and AWS OIDC IAM;
-2. execute/import organization account bootstrap under controlled ORGADMIN;
-3. execute DEV identity bootstrap under controlled ACCOUNTADMIN;
-4. configure GitHub Environment `dev` variables, including the account-scoped Snowflake OIDC audience;
-5. run/review the manual DEV remote plan;
-6. add a protected DEV apply only after the plan is understood;
-7. verify Snowflake objects/grants and adjust only demonstrated privilege gaps;
-8. repeat for UAT, then protected PROD.
+See `TERRAFORM_STATE_AND_IDENTITY.md`, `RBAC_MODEL.md`, ADR-018, ADR-020, ADR-024 and ADR-034.
