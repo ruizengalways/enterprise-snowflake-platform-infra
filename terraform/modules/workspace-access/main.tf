@@ -75,3 +75,16 @@ resource "snowflake_grant_privileges_to_account_role" "ci_warehouse_usage" {
     object_name = each.value
   }
 }
+
+# A CI role owns the ephemeral schemas and therefore naturally owns any Streams,
+# Tasks or Dynamic Tables it creates inside them. Snowflake still requires the
+# Task owner role to retain global EXECUTE TASK for warehouse-backed Tasks to run.
+# EXECUTE MANAGED TASK is intentionally omitted because CI uses WH_<DOMAIN>_CI.
+resource "snowflake_grant_privileges_to_account_role" "ci_execute_task" {
+  provider = snowflake.security
+  for_each = local.ci_projects
+
+  privileges        = ["EXECUTE TASK"]
+  account_role_name = snowflake_account_role.ci[each.value].name
+  on_account        = true
+}
