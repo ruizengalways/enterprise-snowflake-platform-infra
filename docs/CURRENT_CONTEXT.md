@@ -9,8 +9,8 @@
 ## 1. Non-negotiable design rules
 
 - Common technical behaviour is metadata-driven; genuine domain/business logic stays explicit SQL/code.
-- Do not create a YAML programming language or over-abstract differences that are genuinely project-specific.
-- No DEV/UAT/PROD Git branches. Promote immutable full Git SHAs.
+- Do not create a YAML programming language or over-abstract genuinely project-specific differences.
+- No DEV/UAT/PROD Git branches. Promote immutable full Git SHAs from reviewed `main` history.
 - One Snowflake object has one authoritative lifecycle owner.
 - Git is configuration source of truth; `PLATFORM_CONTROL` is runtime/operational state.
 - Terraform defines stable platform resources and permission models; enterprise IdP/SCIM controls who has human access.
@@ -159,13 +159,9 @@ SU_GITHUB_<DOMAIN>_CI
 
 No serverless `EXECUTE MANAGED TASK` is granted.
 
-PR schemas:
+PR schemas follow `PR_<NUMBER>_<LAYER>`. The reusable PR workflow creates/drops guarded schemas and does not execute untrusted PR business code under Snowflake credentials. Its `framework_ref` must be a full lowercase 40-character SHA and the actual framework checkout is verified.
 
-```text
-PR_<NUMBER>_<LAYER>
-```
-
-Reusable framework PR workflow creates/drops guarded ephemeral schemas and does not execute untrusted project PR business code under Snowflake credentials.
+Snowflake account/audience values are loaded from the caller repository's protected `ci` GitHub Environment only after the environment-backed job starts; they are not bound in job-level `env` before environment configuration is available.
 
 ## 7. Stable project deployment identity
 
@@ -184,14 +180,7 @@ SU_GITHUB_<DOMAIN>_DEPLOY
 
 `AR_<DOMAIN>_DEPLOY` is outside the human role hierarchy and owns long-lived project runtime objects created by delivery.
 
-Current derived service users include:
-
-```text
-SU_GITHUB_HEALTH_DEPLOY
-SU_GITHUB_TRANSPORT_DEPLOY
-```
-
-in DEV/UAT/PROD, each bound to its same-domain deployment role in that Snowflake account.
+Current derived service users include `SU_GITHUB_HEALTH_DEPLOY` and `SU_GITHUB_TRANSPORT_DEPLOY` in DEV/UAT/PROD, each bound to its same-domain deployment role in that Snowflake account.
 
 GitHub OIDC subjects are analytics-repository + GitHub Environment scoped. Health cannot authenticate as Transport and vice versa. All Snowflake workload identities use an account-scoped OIDC audience rather than the shared `snowflakecomputing.com` audience.
 
@@ -205,60 +194,53 @@ Framework reusable workflow:
 enterprise-snowflake-data-project-framework/.github/workflows/project-deploy.yml
 ```
 
-Health/Transport contain thin manual `deploy.yml` callers. Deployment requires:
-
-```text
-full 40-character project Git SHA
-full 40-character framework Git SHA
-```
+Health/Transport contain thin manual `deploy.yml` callers. Deployment requires full lowercase 40-character project and framework SHAs.
 
 The reusable workflow:
 
 1. accepts only `dev`, `uat` or `prod`;
-2. checks out the exact project SHA;
-3. checks out the exact framework SHA;
-4. verifies project `dbt/packages.yml` uses that same framework revision;
-5. targets the selected protected GitHub Environment;
-6. requests an account-scoped GitHub OIDC token;
-7. authenticates as `SU_GITHUB_<DOMAIN>_DEPLOY` / `AR_<DOMAIN>_DEPLOY`;
-8. targets `<ENV>_<DOMAIN>` and `WH_<DOMAIN>_TRANSFORM`;
-9. runs dbt deployment;
-10. serializes deployments per domain/environment with `cancel-in-progress: false`.
+2. starts the protected caller-repository GitHub Environment job, then loads environment-level `SNOWFLAKE_ACCOUNT` and `SNOWFLAKE_OIDC_AUDIENCE`;
+3. checks out the caller repository's full current `main` history;
+4. verifies the requested project SHA exists and is an ancestor of current `main`;
+5. detached-checks out that exact project SHA;
+6. checks out the exact framework SHA and verifies it;
+7. verifies project `dbt/packages.yml` uses that same framework revision;
+8. requests an account-scoped GitHub OIDC token;
+9. authenticates as `SU_GITHUB_<DOMAIN>_DEPLOY` / `AR_<DOMAIN>_DEPLOY`;
+10. targets `<ENV>_<DOMAIN>` and `WH_<DOMAIN>_TRANSFORM` and runs dbt deployment;
+11. serializes deployments per domain/environment with `cancel-in-progress: false`.
+
+An unmerged side-branch SHA cannot be sent through the standard deployment path merely because it is a valid commit object.
 
 Promotion means:
 
 ```text
-same project Git SHA
+same reviewed main-history project Git SHA
 DEV -> UAT -> PROD
 ```
 
-The environment changes; the code revision does not.
-
-No live deployment has executed yet because real Snowflake accounts/GitHub Environment variables have not been bootstrapped.
+The environment changes; the code revision does not. No live deployment has executed yet because real Snowflake accounts/GitHub Environment variables have not been bootstrapped.
 
 ## 9. Framework immutable revision
 
 Current framework release pinned by Health and Transport:
 
 ```text
-f21fe2b00c20d56f45d7673ac79ff5aa1029338c
+b1896aa110632e94c21010695ee000c9181d9caf
 ```
 
-The same SHA is used by:
+The same SHA is used by project `dbt/packages.yml`, metadata validation, dbt static CI, PR workspace reusable workflow, and project deployment reusable workflow.
 
-- project `dbt/packages.yml`;
-- metadata validation action;
-- dbt static action;
-- PR workspace reusable workflow;
-- project deployment reusable workflow.
+Framework CI now includes explicit delivery-workflow contract assertions for protected-environment variable loading, full-SHA framework verification, main-history ancestry validation and exact detached project checkout.
 
 Relevant validation:
 
-- Framework run `33246689595` — SUCCESS.
-- Health Metadata CI `33247181047` — SUCCESS.
-- Health dbt Static CI `33247192592` — SUCCESS.
-- Transport Metadata CI `33247223896` — SUCCESS.
-- Transport dbt Static CI `33247231405` — SUCCESS.
+- Framework run `33247852738` — SUCCESS.
+- Health Metadata CI `33247921191` — SUCCESS.
+- Health dbt Static CI `33247929378` — SUCCESS.
+- Transport Metadata CI `33247963393` — SUCCESS.
+- Transport dbt Static CI `33247973079` — SUCCESS.
+- Recent Health/Transport Actions scans show no new workflow-load/parser failures after caller repinning.
 
 ## 10. Terraform identity and state lifecycle
 
@@ -364,11 +346,7 @@ Important rules:
 
 ## 12. Runtime state and observability
 
-Mutable checkpoint/progress state lives in:
-
-```text
-PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT
-```
+Mutable checkpoint/progress state lives in `PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT`.
 
 Operational ledgers:
 
@@ -481,10 +459,11 @@ The next real milestone is live DEV control-plane proof:
 5. verify RBAC/warehouses/PLATFORM_CONTROL structure
 6. bootstrap project-identity/dev
 7. configure Health/Transport GitHub Environments ci + dev
-8. prove PR workspace WIF create/drop
-9. prove immutable DEV project deployment WIF
-10. execute the deterministic SCD2 singular test in real Snowflake
-11. only then progress UAT, PROD and later streaming demos
+8. prove PR workspace WIF create/drop, including protected-environment variable resolution
+9. prove immutable DEV project deployment WIF from a reviewed main-history SHA
+10. prove an unmerged side-branch SHA is rejected by the deployment workflow
+11. execute the deterministic SCD2 singular test in real Snowflake
+12. only then progress UAT, PROD and later streaming demos
 ```
 
 See:
