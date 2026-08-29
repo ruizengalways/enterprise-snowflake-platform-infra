@@ -9,7 +9,7 @@ ADR-027 separated DEV PR-CI service identity from platform Terraform state. Stab
 
 Using `AR_<DOMAIN>_ADMIN` as the routine deployment principal would couple background object ownership to human administration, require standing UAT/PROD transform compute for humans, and make deployment identity depend on employee lifecycle. Reusing platform Terraform identity would also violate the lifecycle boundary between stable platform infrastructure and data-project delivery.
 
-Promotion must also prevent environment branches or mutable framework references from silently changing code between DEV, UAT and PROD.
+Promotion must also prevent environment branches, unreviewed side-branch commits, or mutable framework references from silently changing code between DEV, UAT and PROD.
 
 ## Decision
 
@@ -68,6 +68,8 @@ repo:ruizengalways/enterprise-snowflake-health-analytics:environment:prod
 
 Transport uses the Transport repository. Each Snowflake account uses an account-scoped OIDC audience rather than the shared `snowflakecomputing.com` audience.
 
+Environment-level Snowflake account/audience configuration is consumed only after the protected GitHub Environment job starts. The reusable workflow uses configuration variables from the calling analytics repository, not from the framework repository.
+
 ## Immutable promotion
 
 Stable project delivery uses the framework reusable workflow and thin project callers.
@@ -75,16 +77,18 @@ Stable project delivery uses the framework reusable workflow and thin project ca
 A deployment must provide:
 
 ```text
-full 40-character project Git SHA
-full 40-character framework Git SHA
+full lowercase 40-character project Git SHA
+full lowercase 40-character framework Git SHA
 ```
 
-The workflow checks out those exact revisions and verifies the project's `dbt/packages.yml` framework revision matches the workflow framework SHA.
+The project SHA must be reachable from the current `main` branch history. The workflow first checks out full `main` history, verifies the requested commit exists and is an ancestor of current `main`, then switches to that exact commit in detached HEAD mode. An arbitrary commit that exists only on an unmerged side branch therefore cannot be deployed through the standard path.
+
+The framework is checked out by its exact SHA. The workflow also verifies the project's `dbt/packages.yml` framework revision matches the workflow framework SHA.
 
 Promotion is therefore:
 
 ```text
-same project SHA
+same reviewed main-history project SHA
 DEV -> UAT -> PROD
 ```
 
@@ -107,7 +111,8 @@ DEV remains different by design: human `DEVELOPER` keeps interactive transform c
 - Platform Terraform identity is not reused for project delivery.
 - UAT/PROD routine transform execution becomes machine-only.
 - Break-glass access is visible as an identity-governance event rather than an always-on Terraform grant.
-- Promotion can prove that the exact tested project revision reaches each environment.
+- An unmerged side-branch commit cannot be supplied directly to the standard deployment workflow.
+- Promotion can prove that the exact reviewed project revision reaches each environment.
 - `project-identity/<env>` must not be applied before `platform/<env>` creates its target deployment roles.
 
 ## Verification gate
@@ -115,11 +120,13 @@ DEV remains different by design: human `DEVELOPER` keeps interactive transform c
 Static CI proves Terraform/workflow structure only. Before production rollout, live DEV must prove:
 
 1. account-scoped GitHub OIDC authentication;
-2. `SU_GITHUB_<DOMAIN>_DEPLOY` resolves only `AR_<DOMAIN>_DEPLOY`;
-3. deployment can create and own warehouse-backed Stream/Task/Dynamic Table objects;
-4. Task execution works with `EXECUTE TASK` and the named transform warehouse;
-5. no standing human UAT/PROD transform grant is required for routine delivery;
-6. the same project Git SHA can be promoted without source mutation.
+2. environment-level account/audience configuration becomes available only after the protected environment job starts;
+3. `SU_GITHUB_<DOMAIN>_DEPLOY` resolves only `AR_<DOMAIN>_DEPLOY`;
+4. a reviewed `main` commit can deploy while an unmerged side-branch SHA is rejected;
+5. deployment can create and own warehouse-backed Stream/Task/Dynamic Table objects;
+6. Task execution works with `EXECUTE TASK` and the named transform warehouse;
+7. no standing human UAT/PROD transform grant is required for routine delivery;
+8. the same project Git SHA can be promoted without source mutation.
 
 ## Related decisions
 
