@@ -8,12 +8,14 @@ For a new conversation/session, read in this order:
 
 1. [`docs/CURRENT_CONTEXT.md`](docs/CURRENT_CONTEXT.md) — current implementation state, verified CI, blockers and next actions.
 2. [`docs/PROJECT_BLUEPRINT.md`](docs/PROJECT_BLUEPRINT.md) — canonical long-term architecture.
-3. [`docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md`](docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md)
-4. [`docs/architecture/ACCOUNT_TOPOLOGY.md`](docs/architecture/ACCOUNT_TOPOLOGY.md)
-5. [`docs/architecture/RBAC_MODEL.md`](docs/architecture/RBAC_MODEL.md)
-6. [`docs/architecture/REPOSITORY_LAYOUT.md`](docs/architecture/REPOSITORY_LAYOUT.md)
-7. [`docs/standards/TERRAFORM_STANDARDS.md`](docs/standards/TERRAFORM_STANDARDS.md)
-8. [`docs/runbooks/terraform-platform-bootstrap.md`](docs/runbooks/terraform-platform-bootstrap.md)
+3. [`docs/architecture/PIPELINE_PATTERN_COVERAGE.md`](docs/architecture/PIPELINE_PATTERN_COVERAGE.md) — coverage audit against the reusable batch/incremental/CDC/event/recovery pattern catalogue.
+4. [`docs/architecture/OPERATIONAL_CONTROL_ACCESS.md`](docs/architecture/OPERATIONAL_CONTROL_ACCESS.md) — open domain-isolation blocker for shared runtime checkpoint/run/check state.
+5. [`docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md`](docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md)
+6. [`docs/architecture/ACCOUNT_TOPOLOGY.md`](docs/architecture/ACCOUNT_TOPOLOGY.md)
+7. [`docs/architecture/RBAC_MODEL.md`](docs/architecture/RBAC_MODEL.md)
+8. [`docs/architecture/REPOSITORY_LAYOUT.md`](docs/architecture/REPOSITORY_LAYOUT.md)
+9. [`docs/standards/TERRAFORM_STANDARDS.md`](docs/standards/TERRAFORM_STANDARDS.md)
+10. [`docs/runbooks/terraform-platform-bootstrap.md`](docs/runbooks/terraform-platform-bootstrap.md)
 
 Architecture decisions are under `docs/adr/`.
 
@@ -138,6 +140,25 @@ DEV -> UAT -> PROD
 
 No environment branches are used.
 
+## Pipeline pattern coverage
+
+The architecture/framework has been audited against the reusable pattern catalogue in `ruizengalways/data-engineering-cheetsheet`.
+
+The canonical platform mental model is compatible with:
+
+```text
+data semantics
+  -> capture / delivery
+  -> cursor / checkpoint
+  -> RAW meaning
+  -> downstream current/history/event meaning
+  -> fidelity / recovery
+```
+
+All fourteen catalogue patterns are representable at the architecture level, and most already have reusable framework contracts/primitives. Do **not** interpret that as live end-to-end support: keyless sources, first-class soft-delete-row metadata, safe initial snapshot-to-CDC handoff, explicit change-image capability, broader reconciliation, schema-evolution tooling and reusable recovery/backfill workflows still have gaps or partial coverage.
+
+See `docs/architecture/PIPELINE_PATTERN_COVERAGE.md` for the pattern-by-pattern matrix and exact boundaries.
+
 ## Platform and framework status
 
 Source/static CI currently proves:
@@ -150,8 +171,9 @@ Source/static CI currently proves:
 - metadata/capture/checkpoint/quality/SCD primitives;
 - deterministic offline SCD2 behavior oracle;
 - reusable PR workspace and immutable project deployment workflows;
-- query-tag/cost-attribution baseline.
+- query-tag/cost-attribution baseline;
+- architecture-level coverage of the main snapshot/watermark/net-change/full-change/business-event/snapshot-diff patterns, with explicit documented limitations.
 
-This is not live Snowflake proof. Real remote state, account bootstrap/import, Terraform apply, WIF authentication, PR workspace execution, project deployment and live SCD2 execution are still pending.
+This is not live Snowflake proof. Real remote state, account bootstrap/import, Terraform apply, WIF authentication, safe domain-scoped `PLATFORM_CONTROL` runtime access, PR workspace execution, project deployment, external ingestion and live SCD2/recovery execution are still pending.
 
 Kafka Connector, direct Snowpipe Streaming and Openflow remain intentionally deferred until the live DEV foundation is proven.
