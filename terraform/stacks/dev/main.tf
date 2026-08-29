@@ -56,31 +56,73 @@ module "rbac" {
 
   project_codes = local.project_codes
 
+  # Human domain roles are attached only to stable DEV_<DOMAIN> databases.
+  # CI_<DOMAIN> databases are intentionally excluded and handled by the
+  # machine-only workspace_access module below.
   database_projects = {
     for key, environment in module.analytics_environment :
     environment.database_name => local.config.analytics_databases[key].project_code
+    if startswith(environment.database_name, "DEV_")
   }
 
   stable_schemas_by_database = {
     for key, environment in module.analytics_environment :
     environment.database_name => toset(local.config.analytics_databases[key].schemas)
+    if startswith(environment.database_name, "DEV_")
   }
 
   published_schemas_by_database = {
     for key, environment in module.analytics_environment :
     environment.database_name => toset(local.config.analytics_databases[key].published_schemas)
+    if startswith(environment.database_name, "DEV_")
   }
 
   # DEV is the only human environment where DEVELOPER receives WRITE.
-  # GUEST/READER use the domain query warehouse; DEVELOPER adds transform compute.
-  # CI database/warehouse access moves to a dedicated workload identity.
   grant_developer_write = true
 
-  warehouse_grants = {
-    AR_HEALTH_GUEST        = toset([module.warehouse["health_query"].fully_qualified_name])
-    AR_HEALTH_DEVELOPER    = toset([module.warehouse["health_transform"].fully_qualified_name])
-    AR_TRANSPORT_GUEST     = toset([module.warehouse["transport_query"].fully_qualified_name])
-    AR_TRANSPORT_DEVELOPER = toset([module.warehouse["transport_transform"].fully_qualified_name])
-    AR_PLATFORM_ENGINEER   = toset([module.warehouse["platform_ops"].fully_qualified_name])
+  warehouse_grants = merge(
+    {
+      for project in values(local.config.projects) :
+      "AR_${project.code}_GUEST" => toset([
+        module.warehouse[project.warehouse_keys.query].fully_qualified_name,
+      ])
+    },
+    {
+      for project in values(local.config.projects) :
+      "AR_${project.code}_DEVELOPER" => toset([
+        module.warehouse[project.warehouse_keys.transform].fully_qualified_name,
+      ])
+    },
+    {
+      AR_PLATFORM_ENGINEER = toset([module.warehouse["platform_ops"].fully_qualified_name])
+    },
+  )
+}
+
+module "workspace_access" {
+  source = "../../modules/workspace-access"
+
+  providers = {
+    snowflake.objects  = snowflake.objects
+    snowflake.security = snowflake.security
   }
+
+  developer_databases = {
+    for key, environment in module.analytics_environment :
+    environment.database_name => local.config.analytics_databases[key].project_code
+    if startswith(environment.database_name, "DEV_")
+  }
+
+  ci_databases = {
+    for key, environment in module.analytics_environment :
+    environment.database_name => local.config.analytics_databases[key].project_code
+    if startswith(environment.database_name, "CI_")
+  }
+
+  ci_warehouses_by_project = {
+    for project in values(local.config.projects) :
+    project.code => module.warehouse[project.warehouse_keys.ci].fully_qualified_name
+  }
+
+  depends_on = [module.rbac]
 }
