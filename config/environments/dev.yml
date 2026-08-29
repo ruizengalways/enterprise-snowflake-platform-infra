@@ -9,6 +9,11 @@ terraform_identity:
   oidc_issuer: https://token.actions.githubusercontent.com
   oidc_subject: repo:ruizengalways/enterprise-snowflake-platform-infra:environment:dev
 
+project_ci_identity:
+  github_owner: ruizengalways
+  github_environment: ci
+  oidc_issuer: https://token.actions.githubusercontent.com
+
 projects:
   health:
     code: HEALTH
