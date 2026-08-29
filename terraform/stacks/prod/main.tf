@@ -71,8 +71,7 @@ module "rbac" {
     environment.database_name => toset(local.config.analytics_databases[key].published_schemas)
   }
 
-  # PROD developers remain read-only. Domain admins retain transform warehouse
-  # access until a dedicated deployment machine identity is implemented.
+  # PROD developers remain read-only.
   grant_developer_write = false
 
   warehouse_grants = merge(
@@ -83,6 +82,14 @@ module "rbac" {
       ])
     },
     {
+      for project in values(local.config.projects) :
+      "AR_${project.code}_DEPLOY" => toset([
+        module.warehouse[project.warehouse_keys.transform].fully_qualified_name,
+      ])
+    },
+    {
+      # Temporary manual/break-glass transform access. Routine project delivery
+      # is owned by AR_<DOMAIN>_DEPLOY once its WIF service identity is bootstrapped.
       for project in values(local.config.projects) :
       "AR_${project.code}_ADMIN" => toset([
         module.warehouse[project.warehouse_keys.transform].fully_qualified_name,
