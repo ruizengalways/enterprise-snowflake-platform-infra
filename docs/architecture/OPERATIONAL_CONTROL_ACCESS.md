@@ -2,13 +2,15 @@
 
 ## Status
 
-**Design/implementation gap identified by documentation/source audit on 2026-08-29.**
+**Accepted design; source/static implementation in progress as of 2026-08-29.**
 
-`PLATFORM_CONTROL.OPERATIONS` objects and framework SQL primitives exist in source/static CI, but project-runtime access to shared operational state is **not yet safely wired** into domain machine RBAC. Do not describe runtime control-plane access as live/complete until this boundary is implemented and verified.
+The accepted baseline is **domain-scoped read surfaces plus domain-fixed owner-rights write APIs** generated from environment project metadata.
 
-## Current objects
+The source renderer and static isolation checks now exist on the implementation branch. The existing DEV operational SQL deployment workflow has not yet been wired to execute the generated access SQL, and no real Snowflake account has verified the boundary. Do not describe runtime control-plane access as live/complete until the deployment wiring and live DEV denial tests succeed.
 
-Account-local operational state currently includes:
+## Current base objects
+
+Account-local operational state includes:
 
 ```text
 PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT
@@ -17,7 +19,7 @@ PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECK_RESULT
 PLATFORM_CONTROL.OPERATIONS.ADVANCE_PIPELINE_CHECKPOINT(...)
 ```
 
-The framework currently exposes primitives that can read/write those contracts, including:
+The framework exposes primitives that can read/write these contracts, including:
 
 ```text
 esf_checkpoint_read_sql()
@@ -27,15 +29,7 @@ esf_pipeline_run_finish_sql()
 esf_record_check_result_sql()
 ```
 
-The default checkpoint relation/procedure names point at `PLATFORM_CONTROL.OPERATIONS`.
-
-## Current missing bridge
-
-`AR_<DOMAIN>_DEPLOY` currently receives domain analytics WRITE, transform warehouse usage and the Snowflake-native Stream/Task/Dynamic Table privileges required for stable project delivery.
-
-It does **not** currently receive a completed domain-scoped access path to shared `PLATFORM_CONTROL.OPERATIONS` state.
-
-This is intentional until the cross-domain isolation model is explicit. Do not solve it by granting every project deployment role unrestricted `SELECT`/DML on all control tables.
+The shared base tables and generic platform procedure remain platform-owned objects. Project runtime roles must not receive unrestricted access to them.
 
 ## Security requirement
 
@@ -55,54 +49,113 @@ The same property must hold for future domains such as FINANCE without hand-writ
 
 Platform operators may have broader governed access where required.
 
-## Why a broad grant is unsafe
+## Why broad grants are unsafe
 
-The current checkpoint advancement procedure is an owner-rights procedure and accepts `P_PROJECT_CODE` from the caller. Granting a project role USAGE on that procedure without an additional domain guard would allow the caller to request another project's code.
+The generic checkpoint advancement procedure is an owner-rights procedure and accepts `P_PROJECT_CODE` from the caller. Granting a project role USAGE on that procedure without an additional domain guard would allow the caller to request another project's code.
 
-Likewise, the run/check-result framework primitives currently generate direct DML to a supplied relation and include `project_code` as data. Broad table DML would therefore make domain isolation depend on caller convention rather than enforcement.
+Likewise, the existing run/check-result framework primitives can generate direct DML to a supplied relation and include `project_code` as data. Broad table DML would therefore make domain isolation depend on caller convention rather than enforcement.
 
-A row access policy alone is not sufficient for the write path: Snowflake documents that row access policies do not prevent rows from being inserted.
+A row access policy alone is not sufficient for the write path: row access policies do not prevent rows from being inserted.
 
-Current Snowflake references:
+For owner-rights procedures, do not assume `INVOKER_ROLE()` can safely recover the external project role. The accepted design avoids that dependency entirely.
 
-- Owner/caller stored-procedure rights: https://docs.snowflake.com/en/developer-guide/stored-procedure/stored-procedures-rights
-- `INVOKER_ROLE()`: https://docs.snowflake.com/en/sql-reference/functions/invoker_role
-- Row access policy behavior/limitations: https://docs.snowflake.com/en/user-guide/security-row-intro
+## Accepted design
 
-Note that for an owner-rights stored procedure, Snowflake evaluates `INVOKER_ROLE()` as the procedure owner role rather than the external caller role. Do not assume a generic owner-rights procedure can safely infer the calling domain from that function.
+### Read path
 
-## Required design properties
+For each configured project code, generate secure views over the shared base tables:
 
-Any accepted implementation must provide all of the following:
+```text
+<DOMAIN>_PIPELINE_CHECKPOINT
+<DOMAIN>_PIPELINE_RUN
+<DOMAIN>_PIPELINE_CHECK_RESULT
+```
 
-1. **Domain-enforced reads.** A project runtime cannot read another project's checkpoint/run/check state.
-2. **Domain-enforced writes.** A caller cannot insert/update another `project_code` merely by changing a parameter.
-3. **Least privilege.** Project runtime does not receive unrestricted DML on the whole operational schema.
-4. **Metadata-driven onboarding.** Adding a domain should derive the access boundary from platform project metadata, not copied Health/Transport SQL.
-5. **Platform visibility.** Governed platform operations/monitoring can still inspect account-wide state.
-6. **One owner.** Terraform/native SQL/framework responsibilities remain unambiguous.
-7. **No preview-only dependency as the mandatory baseline.** A production reference should not require a preview security feature when a stable design is available.
-8. **Framework contract stays simple.** Projects should not need to know platform security implementation details beyond their approved operational API/relation contract.
+Each view contains a server-fixed predicate:
 
-## Candidate implementation shapes
+```sql
+WHERE PROJECT_CODE = '<DOMAIN>'
+```
 
-No option is accepted yet. Viable designs include:
+`AR_<DOMAIN>_DEPLOY` receives `SELECT` only on its three domain views, plus the required database/schema `USAGE` privileges.
 
-### A. Domain-scoped read surface + owner-rights write APIs
+It receives no `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` or `REFERENCES` privilege on the shared operational base tables.
 
-Keep shared base tables, expose only domain-filtered read surfaces to project roles, and route mutations through owner-rights procedures whose allowed project/domain is fixed by the granted API rather than caller-supplied free text.
+### Write path
 
-This can remain metadata-driven by generating the domain surfaces/API grants from configured project codes.
+For each configured domain, generate owner-rights procedures whose project and environment are fixed in the procedure body rather than accepted from the caller:
 
-### B. Domain-specific operational storage
+```text
+<DOMAIN>_ADVANCE_PIPELINE_CHECKPOINT(...)
+<DOMAIN>_PIPELINE_RUN_START(...)
+<DOMAIN>_PIPELINE_RUN_FINISH(...)
+<DOMAIN>_RECORD_PIPELINE_CHECK_RESULT(...)
+```
 
-Physically separate project runtime state inside `PLATFORM_CONTROL` and aggregate it for platform monitoring.
+Important enforcement properties:
 
-This is simpler to reason about from a security perspective but creates more objects and aggregation work.
+- there is no caller-controlled `P_PROJECT_CODE` parameter;
+- there is no caller-controlled `P_ENVIRONMENT` parameter;
+- checkpoint MERGE keys always include the fixed domain;
+- run-start MERGE matching includes fixed domain and environment, so one project cannot update another project's same-named run;
+- run-finish UPDATE includes fixed domain and environment predicates;
+- check-result INSERT always writes fixed domain and environment values;
+- the project role receives `USAGE` only on its own generated procedures.
 
-### C. Policy-protected reads + guarded write API
+The generic base procedure may remain available to governed platform operators, but project deploy roles must not be granted it.
 
-Use a stable row-access mechanism for reads and owner-rights procedures for writes. The write API must independently enforce the project boundary because row-access policies do not block arbitrary inserts.
+### Metadata-driven generation
+
+The authoritative project list remains:
+
+```text
+config/environments/<env>.yml -> projects
+```
+
+`snowflake/control/operations/render_domain_access.py` reads that metadata and deterministically renders all domain views, write APIs and grants for DEV/UAT/PROD.
+
+Adding a new domain therefore requires project metadata and normal RBAC/project identity configuration; it does not require copied Health/Transport SQL.
+
+The renderer rejects project codes that are not safe unquoted Snowflake identifiers.
+
+## Ownership boundary
+
+Ownership remains intentionally split:
+
+```text
+Terraform
+  PLATFORM_CONTROL database
+  managed schemas
+  stable roles / workload identities / warehouses
+
+platform-infra native SQL
+  operational base tables
+  generic platform procedure
+  generated domain read/write access surfaces
+
+framework
+  reusable SQL/dbt helpers that target the approved project operational contract
+
+project repos
+  domain metadata, datasets and business logic
+```
+
+Do not manage the same database object in both Terraform and native SQL.
+
+## Static verification
+
+`Platform Control SQL CI` verifies at least:
+
+```text
+renderer unit tests pass
+DEV/UAT/PROD metadata all render successfully
+no shared operational-table project DML grant is generated
+project/environment are not exposed as caller-controlled write-API parameters
+finish updates are project/environment constrained
+invalid project identifiers are rejected
+```
+
+Static rendering proves the intended SQL shape. It does not prove Snowflake authorization semantics or successful live deployment.
 
 ## Explicit non-solutions
 
@@ -113,21 +166,32 @@ grant every AR_<DOMAIN>_DEPLOY unrestricted DML on PLATFORM_CONTROL.OPERATIONS
 trust caller-supplied project_code without server-side enforcement
 use row access policy alone as insert authorization
 reuse human ADMIN as the routine runtime principal
+infer the external project role from owner-rights procedure role functions
 create one-off Health/Transport logic that cannot derive for future domains
 ```
 
-## Verification gate
+## Remaining integration work
+
+Before this boundary can be called source-complete, the protected operational SQL deployment workflow must render the selected environment configuration and execute the generated SQL after the shared base objects are deployed.
+
+The framework runtime helpers must then use the domain-scoped read/write contract rather than assuming project DML on shared base relations.
+
+## Live DEV verification gate
 
 Before project runtime control state is considered complete, live DEV must prove at least:
 
 ```text
 HEALTH can read/write its own checkpoint/run/check state
 TRANSPORT can read/write its own checkpoint/run/check state
-HEALTH attempts against TRANSPORT state are denied or invisible
-TRANSPORT attempts against HEALTH state are denied or invisible
+HEALTH cannot see TRANSPORT rows through its read surfaces
+TRANSPORT cannot see HEALTH rows through its read surfaces
+HEALTH cannot invoke TRANSPORT write procedures
+TRANSPORT cannot invoke HEALTH write procedures
+project roles have no direct DML on shared operational tables
+project roles cannot invoke the generic project_code-accepting checkpoint procedure
 platform operator access works as designed
 retry/idempotency semantics remain correct
 checkpoint advancement still composes with target-DML transaction requirements
 ```
 
-Until then, the framework SQL primitives are reusable building blocks, not proof of end-to-end project operational-state authorization.
+Until then, the source/static implementation is a security design baseline, not proof of end-to-end project operational-state authorization.
