@@ -4,7 +4,7 @@
 >
 > **Updated:** 2026-08-29
 >
-> **Current phase:** Phase 1 platform + reusable framework foundation is source/static-CI proven. Documentation has been cross-repo audited against current source. No real Snowflake account bootstrap, Terraform apply, project deployment or live data execution has happened yet.
+> **Current phase:** Phase 1 platform + reusable framework foundation is source/static-CI proven. Documentation has been cross-repo audited against current source and the external pipeline-pattern catalogue. No real Snowflake account bootstrap, Terraform apply, project deployment or live data execution has happened yet.
 
 ## 1. Non-negotiable rules
 
@@ -199,7 +199,7 @@ Transport dbt       33247973079  SUCCESS
 
 Framework CI includes explicit workflow security assertions for protected-environment variable loading, full-SHA verification, main-history ancestry validation and exact detached checkout.
 
-Documentation-only commits may exist on framework `main` after this release; do not confuse repository HEAD with the project-pinned executable framework revision. Do not repin project code merely because framework documentation changed.
+As of the pipeline-pattern audit, all framework commits after `b1896aa...` remain documentation-only. A compare against current `main` shows only `README.md` and files under `docs/patterns/` changed. Therefore the coverage audit applies to the project-pinned executable revision. Do not repin project code merely because framework documentation changed.
 
 ## 8. Terraform lifecycle/state
 
@@ -353,7 +353,7 @@ Architecture decisions:
 - ADR-031 — reusable capture archetypes + Dynamic Table fallback.
 - ADR-035 — capture fidelity + reusable SCD consumer semantics.
 
-The duplicate ADR-031 numbering that previously existed has been corrected. ADR-030/031 now also record current implementation status so their original phase language is not mistaken for present-day gaps.
+The duplicate ADR-031 numbering that previously existed has been corrected. ADR-030/031 also record current implementation status so their original phase language is not mistaken for present-day gaps.
 
 ## 11. Current domain contracts
 
@@ -369,7 +369,7 @@ fidelity:            full_change
 checkpoint:          source_position
 ordering:            source_sequence
 idempotency:         patient_id + source_sequence
-change semantics:    CDC + tombstone delete
+change semantics:    CDC + tombstone delete event
 freshness:           warn 60 min / error 120 min
 ```
 
@@ -439,12 +439,99 @@ The audit also surfaced the domain-scoped operational control access gap describ
 
 Framework pattern/product assertions were checked against current Snowflake documentation: ADAPTIVE Dynamic Table refresh is GA as of 2026-07-30; Data Quality Monitoring remains Enterprise Edition; Stream repeatable-read/offset-on-commit semantics match the framework pattern; Snowflake's current decision guidance keeps SCD2 history on Streams + Tasks rather than Dynamic Tables.
 
-## 13. What is still genuinely incomplete
+## 13. Pipeline-pattern coverage audit
+
+External audit sources:
+
+```text
+https://github.com/ruizengalways/data-engineering-cheetsheet/blob/main/README.md
+https://github.com/ruizengalways/data-engineering-cheetsheet/blob/main/docs/pipeline-design-walkthrough.md
+```
+
+Canonical result is recorded in:
+
+```text
+docs/architecture/PIPELINE_PATTERN_COVERAGE.md
+```
+
+The external mental model maps cleanly to this platform:
+
+```text
+data semantics
+  -> capture / delivery
+  -> cursor / checkpoint
+  -> RAW meaning
+  -> downstream current/history/event meaning
+  -> fidelity / recovery
+```
+
+All fourteen catalogue patterns are representable at architecture level. Reusable framework contracts/primitives are already sufficient for most of them. The audit deliberately does **not** claim everything is complete.
+
+Important support conclusions:
+
+```text
+READY framework paths
+  full snapshot history
+  watermark
+  watermark + lookback
+  raw append observations
+  net-change current/append
+  full-change event RAW
+  intentionally lossy full-change current projection
+  business-event RAW + project-specific canonicalization
+  snapshot-diff current/append
+
+PARTIAL semantics
+  current-only RAW vs retained evidence is not explicit v1 metadata
+  watermark soft-delete row lacks first-class soft-delete column/value metadata
+  full-change before/after/delta image capability is not explicit metadata
+
+REAL GAPS / blockers
+  keyless source contracts are not supported because business_key is required
+  safe initial snapshot -> incremental/CDC position-P handoff has no reusable contract/runbook
+  source-retention vs required recovery-window validation is not first-class
+  broader PK/hash/snapshot reconciliation is not implemented
+  schema compatibility / EXPAND-MIGRATE-CONTRACT tooling is not implemented
+  replay/backfill/recovery workflow templates are not implemented
+  domain-scoped PLATFORM_CONTROL runtime authorization is still unresolved
+```
+
+Semantic correction made during this audit:
+
+```text
+current-state row: id=300, is_deleted=true
+  -> watermark/current_state
+
+change-feed event: position=5001, DELETE, id=300
+  -> net_change or full_change depending feed granularity
+```
+
+Do not classify a soft-delete current row as net change merely because it is called a tombstone.
+
+Also preserve:
+
+```text
+checkpoint/cursor != event identity
+APPEND history != full source-change fidelity
+CDC change time != automatically business effective time
+```
+
+The SCD2 event macro can use an explicit `effective_at_column`, but business-effective semantics remain explicit project design rather than inferred framework metadata.
+
+## 14. What is still genuinely incomplete
 
 Do **not** claim production/live completion for any of the following:
 
 ```text
 domain-scoped PLATFORM_CONTROL operational read/write API + RBAC bridge
+keyless-source support
+first-class soft-delete-row metadata when a real source needs it
+safe initial snapshot -> incremental/CDC handoff
+explicit before/after/delta change-image capability when required
+source-retention vs recovery-window validation
+broader reconciliation primitives
+schema-evolution compatibility/migration tooling
+rollback/recovery/backfill automation
 real Azure Blob/S3 Terraform state control plane
 real DEV/UAT/PROD Snowflake account bootstrap/import
 identity/dev live apply
@@ -456,44 +543,48 @@ real PR workspace WIF create/drop
 real stable DEV project deployment
 live SCD2 behavioral oracle execution
 UAT/PROD promotion
-rollback/recovery/backfill automation
 full observability dashboards
 advanced governance policy rollout
 Kafka/direct Snowpipe Streaming/Openflow implementation
 ```
 
-## 14. Next execution gate
+## 15. Next execution gate
 
 Work that can be completed before a real cloud/Snowflake environment:
 
 ```text
 1. choose and implement domain-scoped PLATFORM_CONTROL operational access
 2. add static security/contract tests proving no cross-domain control-state path
+3. design the smallest safe initial-load / position-P handoff contract before real CDC onboarding
 ```
+
+Do **not** pre-build a large source DSL. Soft-delete/image/keyless metadata should be added only when a real Health/Transport/source adapter proves the reusable need.
 
 Then live control-plane proof:
 
 ```text
-3. provision/select authoritative remote state backend
-4. bootstrap/import Snowflake accounts
-5. bootstrap identity/dev
-6. reviewed platform/dev plan/apply
-7. verify DEV RBAC/warehouses/PLATFORM_CONTROL
-8. bootstrap project-identity/dev
-9. configure Health/Transport GitHub Environments ci + dev
-10. prove real PR workspace WIF create/drop
-11. prove immutable reviewed-main SHA DEV deployment
-12. prove unmerged side-branch SHA rejection
-13. prove HEALTH cannot access TRANSPORT operational state and vice versa
-14. execute deterministic SCD2 test in real Snowflake
-15. repeat controlled lifecycle for UAT
-16. repeat protected lifecycle for PROD
-17. only then start streaming-ingestion comparison
+4. provision/select authoritative remote state backend
+5. bootstrap/import Snowflake accounts
+6. bootstrap identity/dev
+7. reviewed platform/dev plan/apply
+8. verify DEV RBAC/warehouses/PLATFORM_CONTROL
+9. bootstrap project-identity/dev
+10. configure Health/Transport GitHub Environments ci + dev
+11. prove real PR workspace WIF create/drop
+12. prove immutable reviewed-main SHA DEV deployment
+13. prove unmerged side-branch SHA rejection
+14. prove HEALTH cannot access TRANSPORT operational state and vice versa
+15. execute deterministic SCD2 test in real Snowflake
+16. prove one real incremental/CDC bootstrap + retry + reconciliation + recovery path
+17. repeat controlled lifecycle for UAT
+18. repeat protected lifecycle for PROD
+19. only then start streaming-ingestion comparison
 ```
 
 Primary references:
 
 - `docs/PROJECT_BLUEPRINT.md`
+- `docs/architecture/PIPELINE_PATTERN_COVERAGE.md`
 - `docs/architecture/ACCOUNT_TOPOLOGY.md`
 - `docs/architecture/RBAC_MODEL.md`
 - `docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md`
