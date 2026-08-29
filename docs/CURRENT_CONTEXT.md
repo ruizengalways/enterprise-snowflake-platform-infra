@@ -16,6 +16,7 @@
 - Terraform defines stable platform resources/permission models; enterprise IdP/SCIM controls employee membership.
 - Human and machine identities are separate.
 - Ingestion technology stops at the project-owned stable RAW contract.
+- Canonical layer vocabulary is `RAW -> STAGING -> INTERMEDIATE/CANONICAL -> MARTS -> SEMANTIC`; framework docs do not introduce separate Bronze/Silver physical layers.
 - Prefer Snowflake-native primitives before custom runtime state/orchestration.
 - Dynamic Tables are optional execution/projection choices; classic regular-table paths remain available.
 - Do not start Kafka Connector, direct Snowpipe Streaming or Openflow demos before live DEV foundation proof.
@@ -188,16 +189,16 @@ It is pinned consistently by project package metadata, metadata CI, dbt static C
 Verified runs:
 
 ```text
-Framework CI       33247852738  SUCCESS
-Health Metadata    33247921191  SUCCESS
-Health dbt Static  33247929378  SUCCESS
-Transport Metadata 33247963393  SUCCESS
-Transport dbt      33247973079  SUCCESS
+Framework CI        33247852738  SUCCESS
+Health Metadata     33247921191  SUCCESS
+Health dbt Static   33247929378  SUCCESS
+Transport Metadata  33247963393  SUCCESS
+Transport dbt       33247973079  SUCCESS
 ```
 
 Framework CI includes explicit workflow security assertions for protected-environment variable loading, full-SHA verification, main-history ancestry validation and exact detached checkout.
 
-Documentation-only commits may exist on framework `main` after this release; do not confuse repository HEAD with the project-pinned executable framework revision.
+Documentation-only commits may exist on framework `main` after this release; do not confuse repository HEAD with the project-pinned executable framework revision. Do not repin project code merely because framework documentation changed.
 
 ## 8. Terraform lifecycle/state
 
@@ -287,7 +288,9 @@ full_change
 full_event
 ```
 
-Source fidelity sets the maximum downstream history guarantee. Full snapshots needed for history/delete inference remain retained as immutable snapshot batches. Full-change/full-event sources preserve immutable event evidence in regular tables before Stream consumers. A Stream is an offset/delta consumer, not the complete source audit history.
+Source fidelity sets the maximum downstream history guarantee. Full snapshots needed for history/delete inference remain retained as immutable snapshot batches. Full-change/full-event sources preserve immutable event evidence in regular RAW tables before Stream consumers. A Stream is an offset/delta consumer, not the complete source audit history.
+
+Framework documentation uses RAW as the authoritative evidence-layer term. Bronze/Silver are not additional platform schemas.
 
 Mutable source progress lives in:
 
@@ -323,6 +326,8 @@ scd2_merge
 scd2_stream_task
 ```
 
+`esf_configure_dataset()` remains intentionally limited to the three basic dbt materialization strategies. Checkpoint, quality and SCD behavior are separate dedicated framework primitives rather than hidden materialization hooks.
+
 SCD2 canonical implementations use regular-table/Snowflake-native DML/Stream/Task patterns, not a Dynamic Table SCD2 wrapper.
 
 Key reusable primitives:
@@ -343,10 +348,11 @@ A deterministic SQL behavioral oracle covers duplicate replay, no-op state, upda
 
 Architecture decisions:
 
+- ADR-030 — basic materialization bridge; dedicated runtime/SCD primitives are outside that macro.
 - ADR-031 — reusable capture archetypes + Dynamic Table fallback.
 - ADR-035 — capture fidelity + reusable SCD consumer semantics.
 
-The duplicate ADR-031 numbering that previously existed has been corrected.
+The duplicate ADR-031 numbering that previously existed has been corrected. ADR-030/031 now also record current implementation status so their original phase language is not mistaken for present-day gaps.
 
 ## 11. Current domain contracts
 
@@ -393,16 +399,22 @@ The cross-repository audit corrected material drift in:
 platform README
 PROJECT_BLUEPRINT.md
 ACCOUNT_TOPOLOGY.md
+RBAC_MODEL.md
 REPOSITORY_LAYOUT.md
+TERRAFORM_STATE_AND_IDENTITY.md
 TERRAFORM_STANDARDS.md
 NAMING_CONVENTIONS.md
 terraform/README.md
-TERRAFORM_STATE_AND_IDENTITY.md
+terraform bootstrap runbook
 framework README
 framework workspace/query-tag pattern
+framework capture-archetypes pattern
+framework source-capture matrix
 Health README
 Transport README
 demo-source README
+ADR-030 implementation status
+ADR-031 implementation status
 ADR numbering
 ```
 
@@ -416,9 +428,13 @@ UAT/PROD ADMIN transform -> machine-only routine DEPLOY compute
 Health scd2_snapshot -> actual scd2_merge/full-change CDC
 SCD/quality/deployment marked future -> current implemented static-CI baseline
 ambiguous duplicate ADR-031 -> ADR-031 capture + ADR-035 SCD consumers
+Bronze/Silver aliases -> canonical RAW/downstream layer vocabulary
+historical ADR phase wording -> explicit current implementation status
 ```
 
-Framework pattern/product assertions were also checked against current Snowflake documentation: ADAPTIVE Dynamic Table refresh is GA as of 2026-07-30; Data Quality Monitoring remains Enterprise Edition; Stream repeatable-read/offset-on-commit semantics match the framework pattern.
+`PLATFORM_CONTROL` native-SQL deployment documentation and ADR-032 were reviewed and found consistent with current ownership/deployment boundaries; no change was required.
+
+Framework pattern/product assertions were also checked against current Snowflake documentation: ADAPTIVE Dynamic Table refresh is GA as of 2026-07-30; Data Quality Monitoring remains Enterprise Edition; Stream repeatable-read/offset-on-commit semantics match the framework pattern; Snowflake's current decision guidance keeps SCD2 history on Streams + Tasks rather than Dynamic Tables.
 
 ## 13. What is still genuinely incomplete
 
@@ -470,4 +486,4 @@ Primary references:
 - `docs/architecture/REPOSITORY_LAYOUT.md`
 - `docs/standards/TERRAFORM_STANDARDS.md`
 - `docs/runbooks/terraform-platform-bootstrap.md`
-- ADR-031, ADR-034, ADR-035
+- ADR-030, ADR-031, ADR-034, ADR-035
