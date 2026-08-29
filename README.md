@@ -8,117 +8,70 @@ For a new ChatGPT/session handoff, read in this order:
 
 1. [`docs/CURRENT_CONTEXT.md`](docs/CURRENT_CONTEXT.md) — current implementation state, decisions, blockers and next actions.
 2. [`docs/PROJECT_BLUEPRINT.md`](docs/PROJECT_BLUEPRINT.md) — canonical long-term architecture.
-3. [`docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md`](docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md) — state/WIF execution model.
+3. [`docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md`](docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md)
 4. [`docs/architecture/ACCOUNT_TOPOLOGY.md`](docs/architecture/ACCOUNT_TOPOLOGY.md)
 5. [`docs/architecture/RBAC_MODEL.md`](docs/architecture/RBAC_MODEL.md)
 6. [`docs/architecture/REPOSITORY_LAYOUT.md`](docs/architecture/REPOSITORY_LAYOUT.md)
 7. [`docs/standards/TERRAFORM_STANDARDS.md`](docs/standards/TERRAFORM_STANDARDS.md)
-8. [`docs/runbooks/terraform-platform-bootstrap.md`](docs/runbooks/terraform-platform-bootstrap.md)
+8. [`docs/standards/COST_ATTRIBUTION.md`](docs/standards/COST_ATTRIBUTION.md)
+9. [`docs/runbooks/terraform-platform-bootstrap.md`](docs/runbooks/terraform-platform-bootstrap.md)
 
 Architecture decisions are under `docs/adr/`.
 
-## This repository owns
+## Repository responsibility
 
-- Snowflake organization/account foundation and privileged account bootstrap
-- DEV / UAT / PROD account topology
-- domain analytics databases and stable structural schemas
-- domain/platform RBAC and database-role design
-- domain workload warehouses and cost-control foundations
-- GitHub OIDC / Snowflake workload identities for platform Terraform
-- Terraform remote-state adapter contract and deployment guardrails
-- `PLATFORM_CONTROL` structural/operational foundation
-- governance, observability and recovery platform architecture
+This repository owns Snowflake account/platform foundation: organization bootstrap, DEV/UAT/PROD topology, domain databases, stable structural schemas, domain/platform RBAC, domain warehouses, Terraform machine identity, remote-state adapter contract, workspace access boundaries, cost-attribution platform conventions, `PLATFORM_CONTROL`, governance/observability/recovery foundations.
 
-## This repository does not own
-
-- Health or Transport business transformations
-- project-specific dbt models
-- reusable dbt framework logic owned by `enterprise-snowflake-data-project-framework`
-- source-system simulation
-- human employee lifecycle records that should come from enterprise identity/SSO/SCIM
-- Metric Guard
+It does not own Health/Transport business SQL, project dbt models, shared dbt/framework mechanics, source simulation, or day-to-day employee identity membership.
 
 ## Terraform foundation
 
 ```text
 terraform/
-├── backend-profiles/
-│   ├── azurerm/
-│   └── s3/
-├── scripts/
-│   └── select-backend.sh
+├── backend-profiles/{azurerm,s3}/
+├── scripts/select-backend.sh
 ├── modules/
 │   ├── analytics-environment/
 │   ├── warehouse/
 │   ├── platform-control/
 │   ├── rbac/
+│   ├── workspace-access/
 │   └── workload-identity/
 └── stacks/
     ├── organization/
-    ├── identity/
-    │   ├── dev/
-    │   ├── uat/
-    │   └── prod/
+    ├── identity/{dev,uat,prod}/
     ├── dev/
     ├── uat/
     └── prod/
 ```
 
-Configuration:
+`organization/` alone uses ORGADMIN. `identity/<env>/` bootstraps `SU_GITHUB_TERRAFORM_<ENV> -> AR_TERRAFORM_<ENV>`. Routine account roots use those machine roles rather than system roles.
 
-```text
-config/organization.yml
-config/environments/dev.yml
-config/environments/uat.yml
-config/environments/prod.yml
-```
-
-`organization/` alone uses ORGADMIN for Snowflake account creation/import. `identity/<env>/` roots are separate privileged bootstraps for GitHub OIDC service users and `AR_TERRAFORM_<ENV>` roles. Routine DEV/UAT/PROD roots use those dedicated machine roles rather than ACCOUNTADMIN, SYSADMIN or SECURITYADMIN.
-
-Every Terraform root commits `.terraform.lock.hcl`. Static CI validates all seven roots in read-only lock mode and separately validates both backend profiles.
+Static CI validates all seven roots plus Azure Blob and S3 backend profiles.
 
 ## State and machine authentication
 
-Terraform state is intentionally independent of Snowflake authentication.
-
-Supported state profiles:
+State backend is deployment-selectable:
 
 ```text
 azurerm -> Azure Blob Storage (Microsoft-first reference)
-s3      -> Amazon S3 (AWS reference)
+s3      -> Amazon S3 (AWS alternative)
 ```
 
-The same Snowflake root code is used for either backend. `terraform/scripts/select-backend.sh` materialises an ignored `backend.generated.tf` only at execution time.
+The Snowflake Terraform code is identical for both. GitHub OIDC authenticates to the chosen state provider and independently to Snowflake WIF.
 
-For Microsoft-centred enterprises, the reference path is:
-
-```text
-GitHub OIDC -> Microsoft Entra workload federation -> Azure Blob state
-GitHub OIDC -> Snowflake WIF -> SU_GITHUB_TERRAFORM_<ENV> -> AR_TERRAFORM_<ENV>
-```
-
-For AWS-centred enterprises, the state branch becomes GitHub OIDC -> AWS IAM -> S3 while the Snowflake branch is unchanged.
-
-OneDrive/SharePoint can store architecture documents, runbooks and audit evidence; they are not the live Terraform state backend.
-
-Seven state lifecycle boundaries are retained: organization, identity/dev, identity/uat, identity/prod, platform/dev, platform/uat and platform/prod.
-
-A manual-only [`terraform-plan-dev.yml`](.github/workflows/terraform-plan-dev.yml) supports Azure Blob or S3 and intentionally performs no apply.
+OneDrive/SharePoint may store human-facing docs/evidence, not live Terraform state.
 
 ## Domain access and compute
 
-Database boundary is environment × domain, for example `DEV_HEALTH`, `CI_HEALTH`, `UAT_TRANSPORT` and `PROD_TRANSPORT`. Physical source systems do not each receive a database merely for cost attribution.
-
-Every domain receives:
+Stable human access:
 
 ```text
 AR_<DOMAIN>_GUEST -> READER -> DEVELOPER -> ADMIN
 DR_<DOMAIN>_ANALYTICS_GUEST -> READ -> WRITE -> OWNER
 ```
 
-`GUEST` is authenticated read-only access to published schemas (`MARTS`, `SEMANTIC`) only. `READER` can inspect all stable domain layers.
-
-Domain compute is separated by workload:
+Compute:
 
 ```text
 WH_<DOMAIN>_QUERY
@@ -126,14 +79,68 @@ WH_<DOMAIN>_TRANSFORM
 WH_<DOMAIN>_CI   # DEV only
 ```
 
-Employees are assigned to domain roles through the enterprise identity system; Terraform defines the roles/privileges/warehouses, not employee membership.
+Employees receive domain roles through enterprise IdP/SCIM; Terraform defines the model, not employee membership.
+
+## DEV personal and PR CI workspaces
+
+Human roles attach only to `DEV_<DOMAIN>` databases. DEV WRITE roles receive `CREATE SCHEMA` so developers can use:
+
+```text
+<DEVELOPER>_<LAYER>
+```
+
+This is a namespace convention, not per-person security isolation.
+
+CI is machine-only:
+
+```text
+AR_<DOMAIN>_CI
+  -> CI_<DOMAIN>.DR_<DOMAIN>_CI_WORKSPACE
+  -> CREATE SCHEMA on CI_<DOMAIN>
+  -> WH_<DOMAIN>_CI
+```
+
+Human GUEST/READER/DEVELOPER/ADMIN roles do not attach to CI databases.
+
+PR schemas follow `PR_<NUMBER>_<LAYER>`. Reusable guarded SQL rendering lives in `enterprise-snowflake-data-project-framework`; PR workspaces are transient/reproducible and explicitly cleaned up.
+
+## Cost attribution
+
+Use complementary boundaries rather than database-per-source:
+
+```text
+domain storage              -> <ENVIRONMENT>_<DOMAIN>
+compute                     -> WH_<DOMAIN>_<WORKLOAD>
+query execution attribution -> JSON QUERY_TAG + QUERY_ATTRIBUTION_HISTORY
+warehouse idle compute      -> WAREHOUSE_METERING_HISTORY
+serverless/ingestion        -> service-specific usage history
+```
+
+Baseline queries live at:
+
+```text
+snowflake/monitoring/queries/cost_attribution.sql
+```
+
+Shared query-tag construction lives in the framework repo. See `docs/standards/COST_ATTRIBUTION.md` and ADR-026.
 
 ## Current phase
 
 **Phase 1 — Platform Foundation is in progress.**
 
-Proven in source/static CI: pinned Terraform/provider versions and lock files, organization bootstrap, per-account identity bootstrap roots, Azure Blob and S3 backend adapters, GitHub OIDC/Snowflake WIF service-user configuration, dedicated `AR_TERRAFORM_<ENV>` roles, three-account/domain infrastructure, GUEST/READER/DEVELOPER/ADMIN RBAC, workload warehouses, seven-root validation and backend-profile validation.
+Source/static-CI proven now includes:
 
-Still required before Phase 1 exit: provision one real remote-state control plane (Azure Blob or S3), execute/import Snowflake organization and identity bootstraps, configure GitHub Environments, run/review the first real DEV remote plan/apply, verify privileges and objects inside Snowflake, then prove UAT before protected PROD automation. Personal/PR schema lifecycle and cost-control hardening also remain.
+- pinned Terraform/provider versions and committed lock files;
+- organization + per-account Terraform identity roots;
+- Azure Blob/S3 backend adapters;
+- three-account/domain infrastructure;
+- human GUEST/READER/DEVELOPER/ADMIN RBAC;
+- metadata-driven domain warehouse grants;
+- DEV personal workspace `CREATE SCHEMA` capability;
+- machine-only `AR_<DOMAIN>_CI` / `DR_<DOMAIN>_CI_WORKSPACE` boundaries;
+- framework workspace/query-tag utilities with passing Python CI;
+- Snowflake-native cost-attribution query baseline.
+
+Still not executed against live infrastructure: real remote state, Snowflake account bootstrap/import, identity apply, DEV remote plan/apply, effective privilege verification, project-CI service identities, UAT/PROD rollout. Resource monitors/budgets and persisted observability views are also still pending.
 
 Kafka, Snowpipe Streaming, Openflow and broad dbt modelling remain intentionally deferred.
