@@ -1,0 +1,76 @@
+name: Platform Control SQL CI
+
+on:
+  pull_request:
+    paths:
+      - "config/environments/**"
+      - "snowflake/control/operations/**"
+      - ".github/workflows/platform-control-sql-ci.yml"
+      - ".github/workflows/platform-control-sql-deploy-dev.yml"
+  push:
+    branches:
+      - main
+    paths:
+      - "config/environments/**"
+      - "snowflake/control/operations/**"
+      - ".github/workflows/platform-control-sql-ci.yml"
+      - ".github/workflows/platform-control-sql-deploy-dev.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  domain-access:
+    name: validate domain-scoped operational access
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Setup Python
+        uses: actions/setup-python@v7.0.0
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: snowflake/control/operations/requirements.txt
+
+      - name: Install renderer dependency
+        run: python -m pip install -r snowflake/control/operations/requirements.txt
+
+      - name: Run renderer unit tests
+        run: python -m unittest discover -s snowflake/control/operations/tests -p 'test_*.py' -v
+
+      - name: Render every environment access surface
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/platform-control"
+          for env in dev uat prod; do
+            python snowflake/control/operations/render_domain_access.py \
+              --config "config/environments/${env}.yml" \
+              --output "${RUNNER_TEMP}/platform-control/${env}.sql"
+            test -s "${RUNNER_TEMP}/platform-control/${env}.sql"
+          done
+
+      - name: Assert no shared-table project DML grants are rendered
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -REi \
+            'GRANT[[:space:]]+(SELECT|INSERT|UPDATE|DELETE|TRUNCATE|REFERENCES)[[:space:]]+ON[[:space:]]+TABLE[[:space:]]+PLATFORM_CONTROL\.OPERATIONS\.PIPELINE_' \
+            "${RUNNER_TEMP}/platform-control"; then
+            echo "Rendered SQL grants a project role direct access to shared operational tables." >&2
+            exit 1
+          fi
+
+      - name: Assert project/environment are server-fixed
+        shell: bash
+        run: |
+          set -euo pipefail
+          if grep -RE 'P_PROJECT_CODE|P_ENVIRONMENT' "${RUNNER_TEMP}/platform-control"; then
+            echo "Rendered project write API exposes a caller-controlled project/environment parameter." >&2
+            exit 1
+          fi
