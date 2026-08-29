@@ -1,6 +1,6 @@
 # Terraform Platform Foundation
 
-Terraform owns selected stable Snowflake platform infrastructure.
+Terraform owns selected stable Snowflake platform infrastructure and machine-identity boundaries.
 
 ## Layout
 
@@ -14,11 +14,13 @@ terraform/
 │   ├── platform-control/
 │   ├── rbac/
 │   ├── workspace-access/
-│   └── workload-identity/
+│   ├── workload-identity/
+│   └── service-identity/
 └── stacks/
     ├── organization/
     ├── identity/{dev,uat,prod}/
     ├── dev/
+    ├── project-identity/dev/
     ├── uat/
     └── prod/
 ```
@@ -32,21 +34,37 @@ Terraform CLI:       1.16.0
 Snowflake provider:  2.19.0
 ```
 
-## Privileged lifecycle boundaries
-
-`organization/` alone uses ORGADMIN for DEV/UAT/PROD account lifecycle.
-
-`identity/{dev,uat,prod}` bootstraps platform Terraform service users/roles:
+## Lifecycle order
 
 ```text
-SU_GITHUB_TERRAFORM_DEV  -> AR_TERRAFORM_DEV
-SU_GITHUB_TERRAFORM_UAT  -> AR_TERRAFORM_UAT
-SU_GITHUB_TERRAFORM_PROD -> AR_TERRAFORM_PROD
+organization
+-> identity/dev
+-> platform/dev
+-> project-identity/dev
+-> UAT
+-> PROD
 ```
 
-Routine `dev/uat/prod` roots activate only `AR_TERRAFORM_<ENV>` through the `snowflake.objects` and `snowflake.security` aliases.
+`organization/` alone uses ORGADMIN.
 
-Initial routine privileges:
+`identity/<env>` bootstraps:
+
+```text
+SU_GITHUB_TERRAFORM_<ENV> -> AR_TERRAFORM_<ENV>
+```
+
+Routine `dev/uat/prod` activates only `AR_TERRAFORM_<ENV>`.
+
+`project-identity/dev` runs after `platform/dev` and binds project WIF service users to existing machine CI roles:
+
+```text
+SU_GITHUB_HEALTH_CI    -> AR_HEALTH_CI
+SU_GITHUB_TRANSPORT_CI -> AR_TRANSPORT_CI
+```
+
+The generic `service-identity` module creates only SERVICE user/WIF + role assignment; it does not create/expand the role or grant account-level privileges.
+
+## Routine Terraform privileges
 
 ```text
 CREATE DATABASE
@@ -55,137 +73,125 @@ CREATE WAREHOUSE
 MANAGE GRANTS
 ```
 
+Routine Terraform does not use ACCOUNTADMIN/SYSADMIN/SECURITYADMIN.
+
 ## Domain infrastructure
 
-Stable databases:
-
 ```text
-DEV_<DOMAIN>
-UAT_<DOMAIN>
-PROD_<DOMAIN>
-```
+DEV_<DOMAIN> / UAT_<DOMAIN> / PROD_<DOMAIN>
+CI_<DOMAIN>   # DEV account only
 
-DEV also contains:
-
-```text
-CI_<DOMAIN>
-```
-
-Human domain roles:
-
-```text
 AR_<DOMAIN>_GUEST -> READER -> DEVELOPER -> ADMIN
-```
-
-Stable database roles:
-
-```text
 DR_<DOMAIN>_ANALYTICS_GUEST -> READ -> WRITE -> OWNER
-```
 
-Warehouses:
-
-```text
 WH_<DOMAIN>_QUERY
 WH_<DOMAIN>_TRANSFORM
-WH_<DOMAIN>_CI   # DEV only
+WH_<DOMAIN>_CI
 ```
 
-Environment project metadata now declares the query/transform/CI warehouse keys. Root stacks derive grants from metadata instead of hard-coding Health/Transport role/warehouse pairs.
+Project metadata declares query/transform/CI warehouse keys, so grants are derived instead of hard-coded per Health/Transport.
 
 ## DEV workspace access
 
-The DEV root deliberately separates human workspaces from PR CI.
+Human domain RBAC attaches only to `DEV_<DOMAIN>`.
 
-### Human DEV
-
-Human domain RBAC attaches only to `DEV_<DOMAIN>` databases, not `CI_<DOMAIN>`.
-
-The DEV domain WRITE database role receives `CREATE SCHEMA` on the matching `DEV_<DOMAIN>` database. This allows personal workspace names such as:
+DEV WRITE receives:
 
 ```text
-ALICE_STAGING
-ALICE_MARTS
+CREATE SCHEMA on DEV_<DOMAIN>
 ```
 
-Personal schema prefixes are workspace conventions, not security boundaries between people sharing `AR_<DOMAIN>_DEVELOPER`.
+for personal `<DEVELOPER>_<LAYER>` namespaces. This naming convention is not per-person security isolation.
 
-### PR CI
-
-`workspace-access` creates a machine-only capability per domain:
+PR CI is machine-only:
 
 ```text
 AR_<DOMAIN>_CI
   -> CI_<DOMAIN>.DR_<DOMAIN>_CI_WORKSPACE
-      -> USAGE + CREATE SCHEMA on CI_<DOMAIN>
-  -> USAGE on WH_<DOMAIN>_CI
+      -> USAGE + CREATE SCHEMA
+  -> WH_<DOMAIN>_CI
 ```
 
 Human GUEST/READER/DEVELOPER/ADMIN roles do not attach to CI databases.
 
-The framework repo owns guarded rendering of `PR_<NUMBER>_<LAYER>` create/drop SQL. A later project-CI OIDC service identity will receive `AR_<DOMAIN>_CI`.
+## Project CI identity boundary
 
-See ADR-025.
+DEV metadata contains only shared non-secret identity convention inputs (`github_owner`, environment `ci`, OIDC issuer) plus each project's existing code/repository.
 
-## Remote state backend adapters
-
-The Snowflake roots do not commit one cloud-specific backend. Runtime materialises one profile:
-
-```bash
-bash terraform/scripts/select-backend.sh azurerm terraform/stacks/dev
-# or
-bash terraform/scripts/select-backend.sh s3 terraform/stacks/dev
-```
-
-This writes ignored `backend.generated.tf`.
-
-### Azure Blob — Microsoft-first reference
+Terraform derives:
 
 ```text
-GitHub OIDC -> Microsoft Entra workload federation -> Azure Blob
+service user: SU_GITHUB_<DOMAIN>_CI
+role:         AR_<DOMAIN>_CI
+subject:      repo:<owner>/<project-repo>:environment:ci
 ```
 
-Use `Storage Blob Data Contributor` scoped to the state container as the baseline data-plane access.
+The DEV account-scoped Snowflake OIDC audience remains an external bootstrap input.
 
-### Amazon S3 — AWS alternative
+See ADR-027.
+
+## Remote state
+
+Runtime selects:
 
 ```text
-GitHub OIDC -> AWS IAM -> S3 + .tflock
+azurerm -> Azure Blob
+s3      -> Amazon S3
 ```
 
-Use versioning, encryption, blocked public access and Terraform native `use_lockfile = true`; do not introduce deprecated DynamoDB locking for new deployments.
+via `terraform/scripts/select-backend.sh`, which materialises ignored `backend.generated.tf`.
 
-OneDrive/SharePoint may hold human-facing docs/evidence, not the authoritative live Terraform state.
-
-Whichever backend is selected, retain seven independent state keys for organization, three identity roots and three routine account roots.
-
-## Static validation
-
-Platform Infra CI validates:
+There are eight state objects:
 
 ```text
-terraform fmt
+organization
+identity/dev
+identity/uat
+identity/prod
+platform/dev
+project-identity/dev
+platform/uat
+platform/prod
+```
+
+OneDrive/SharePoint is not live Terraform state.
+
+## Static CI
+
+Current matrix validates:
+
+```text
+terraform fmt + backend selector syntax
 organization
 identity/dev
 identity/uat
 identity/prod
 dev
+project-identity/dev
 uat
 prod
 backend azurerm
 backend s3
 ```
 
-The DEV workspace-access slice has passed Terraform provider `2.19.0` init/validate in CI.
+The project-identity root has passed Snowflake provider 2.19.0 init/validate in CI.
 
-Static validation does not prove live Snowflake authorization or remote backend connectivity.
+Static validation does not prove live Snowflake authorization.
 
 ## DEV remote plan
 
-`.github/workflows/terraform-plan-dev.yml` remains manual-only and supports `TF_STATE_BACKEND=azurerm|s3`. It has no apply step.
+`terraform-plan-dev.yml` remains manual-only and plan-only. No automated apply exists yet.
 
-The first real DEV plan/apply must verify effective privileges rather than widening `AR_TERRAFORM_DEV` pre-emptively.
+Live progression must be:
+
+```text
+remote state
+-> identity/dev
+-> platform/dev reviewed plan/apply + verification
+-> project-identity/dev
+-> real project PR workspace test
+```
 
 ## Employee identity
 
-Terraform defines roles and privileges. Employee joins/leaves should be driven by enterprise IdP/SCIM group membership, not user records in Terraform.
+Terraform defines roles/privileges. Employee joins/leaves belong to enterprise IdP/SCIM, not Terraform user records.
