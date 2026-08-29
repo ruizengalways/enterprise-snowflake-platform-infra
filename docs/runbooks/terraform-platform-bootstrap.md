@@ -18,6 +18,7 @@ This runbook assumes source/static CI is already green. It does **not** contain 
 - Do not run `terraform destroy` against organization or identity bootstrap roots.
 - Choose one authoritative remote-state backend for a deployment. Do not make Azure Blob and S3 simultaneous writable copies of the same state.
 - UAT/PROD human transform compute is not a standing baseline grant. Emergency execution must be JIT/break-glass through enterprise identity governance.
+- Stable project deployment accepts only a reviewed commit that belongs to project `main` history; never bypass this with an unmerged side-branch SHA.
 
 ## 1. Choose the remote-state backend
 
@@ -398,16 +399,20 @@ SNOWFLAKE_ACCOUNT
 SNOWFLAKE_OIDC_AUDIENCE
 ```
 
+The reusable jobs read these environment-level values only after the protected Environment-backed job starts. Do not duplicate them into unprotected repository-level configuration merely to make expression evaluation easier.
+
 Then verify in this order:
 
 1. PR workspace create/drop authenticates as `SU_GITHUB_<DOMAIN>_CI`;
 2. no project PR business code receives Snowflake credentials;
-3. manual project deployment is given a full 40-character project Git SHA;
-4. the caller/reusable workflow is pinned to the approved framework SHA;
+3. manual project deployment is given a full lowercase 40-character project Git SHA from reviewed `main` history;
+4. the caller/reusable workflow is pinned to the approved full framework SHA;
 5. project `dbt/packages.yml` uses that same framework SHA;
-6. deployment authenticates as `SU_GITHUB_<DOMAIN>_DEPLOY` and targets `DEV_<DOMAIN>` / `WH_<DOMAIN>_TRANSFORM`.
+6. deployment proves the requested project SHA is an ancestor of current `main`, then detached-checks out that exact revision;
+7. deployment authenticates as `SU_GITHUB_<DOMAIN>_DEPLOY` and targets `DEV_<DOMAIN>` / `WH_<DOMAIN>_TRANSFORM`;
+8. a known unmerged side-branch SHA is rejected by the standard deployment path.
 
-Do not promote to UAT merely because static CI is green; prove the real DEV authorization/runtime behavior first.
+Do not promote to UAT merely because static CI is green; prove the real DEV authorization, Environment-variable timing, main-history gate and runtime behavior first.
 
 ## 19. UAT progression
 
@@ -418,7 +423,7 @@ identity/uat
   -> platform/uat reviewed plan/apply/verify
   -> project-identity/uat
   -> configure Health/Transport GitHub Environment uat
-  -> promote an already-verified immutable project Git SHA
+  -> promote the same already-verified reviewed-main project Git SHA
 ```
 
 `project-identity/uat` creates only `SU_GITHUB_<DOMAIN>_DEPLOY` identities bound to the UAT `AR_<DOMAIN>_DEPLOY` roles.
@@ -434,7 +439,7 @@ identity/prod
   -> platform/prod protected plan/apply/verify
   -> project-identity/prod
   -> configure protected Health/Transport GitHub Environment prod
-  -> promote the exact approved project Git SHA
+  -> promote the exact same approved project Git SHA
 ```
 
 PROD GitHub Environments should require stronger review/protection than DEV/UAT. Promotion changes the target environment, not the code revision. Human ADMIN is not the routine deployment principal and does not receive permanent transform warehouse `USAGE` in the baseline.
@@ -446,4 +451,4 @@ PROD GitHub Environments should require stronger review/protection than DEV/UAT.
 - `docs/architecture/ACCOUNT_TOPOLOGY.md`
 - `docs/architecture/RBAC_MODEL.md`
 - `docs/standards/TERRAFORM_STANDARDS.md`
-- ADR-021, ADR-023, ADR-024, ADR-027
+- ADR-021, ADR-023, ADR-024, ADR-027, ADR-034
