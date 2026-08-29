@@ -1,53 +1,47 @@
 # Canonical Repository Directory Layout
 
-> **Status:** Accepted architecture / current implemented paths where noted.
+> **Status:** Accepted architecture.
 >
 > **Scope:** All five Enterprise Snowflake repositories.
 >
 > **Rule:** Create directories only with real content; no `.gitkeep` theatre.
 
+This document defines ownership and significant paths. It is intentionally **not** an exhaustive file inventory; exhaustive inventories become stale as implementation grows. The repository tree is the authority for individual implementation files.
+
 ## 1. Principles
 
 1. Repository boundaries come before folder convenience.
 2. One concern has one authoritative location.
-3. Project repos stay thin; generic mechanics live in framework/platform repos.
+3. Project repos stay thin; generic technical mechanics live in framework/platform repos.
 4. Reusable workflows/actions live under `.github/`.
 5. Terraform uses reusable modules + explicit lifecycle/state roots.
 6. Bootstrap identities are separate from routine infrastructure.
 7. Remote-state cloud choice is an adapter, not Snowflake/domain logic.
-8. Metadata describes stable technical behaviour, not business-programming logic.
-9. Project model SQL is environment-agnostic and should use `ref()` / `source()`.
+8. Metadata describes bounded technical behaviour, not business-programming logic.
+9. Project model SQL is environment-agnostic and uses `ref()` / `source()`.
 10. Planned directories appear only when the first real implementation file exists.
+11. Volatile release SHAs belong in project pins and `CURRENT_CONTEXT.md`, not in this layout standard.
 
 ## 2. `enterprise-snowflake-platform-infra`
 
-Current structure:
+Significant structure:
 
 ```text
 enterprise-snowflake-platform-infra/
 ├── README.md
-├── .terraform-version
 ├── docs/
-│   ├── CURRENT_CONTEXT.md                   # new-session handoff; read first
-│   ├── PROJECT_BLUEPRINT.md                 # long-term canonical architecture
+│   ├── CURRENT_CONTEXT.md
+│   ├── PROJECT_BLUEPRINT.md
 │   ├── architecture/
-│   │   ├── REPOSITORY_LAYOUT.md
-│   │   ├── ACCOUNT_TOPOLOGY.md
-│   │   ├── RBAC_MODEL.md
-│   │   └── TERRAFORM_STATE_AND_IDENTITY.md
-│   ├── adr/ADR-*.md
+│   ├── adr/
 │   ├── standards/
-│   │   ├── NAMING_CONVENTIONS.md
-│   │   ├── TERRAFORM_STANDARDS.md
-│   │   └── COST_ATTRIBUTION.md
 │   └── runbooks/
-│       └── terraform-platform-bootstrap.md
 ├── config/
 │   ├── organization.yml
 │   └── environments/{dev,uat,prod}.yml
 ├── terraform/
 │   ├── README.md
-│   ├── backend-profiles/{azurerm,s3}/backend.tf
+│   ├── backend-profiles/{azurerm,s3}/
 │   ├── scripts/select-backend.sh
 │   ├── modules/
 │   │   ├── analytics-environment/
@@ -60,31 +54,31 @@ enterprise-snowflake-platform-infra/
 │   └── stacks/
 │       ├── organization/
 │       ├── identity/{dev,uat,prod}/
-│       ├── dev/
-│       ├── project-identity/dev/
-│       ├── uat/
-│       └── prod/
+│       ├── {dev,uat,prod}/
+│       └── project-identity/{dev,uat,prod}/
 ├── snowflake/
-│   └── monitoring/queries/cost_attribution.sql
+│   ├── control/
+│   └── monitoring/
 └── .github/workflows/
-    ├── terraform-ci.yml
-    └── terraform-plan-dev.yml
 ```
 
 Ownership:
 
-- `organization/` is ORGADMIN-only account lifecycle.
-- `identity/<env>/` owns platform Terraform service user/WIF.
-- routine `dev/uat/prod` own stable account/domain infrastructure.
-- `project-identity/dev` runs after `platform/dev` and owns PR-CI service users bound to existing `AR_<DOMAIN>_CI` roles.
-- `workspace-access` owns stable DEV personal/CI workspace permission boundaries, not individual ephemeral schemas.
-- employee membership comes from IdP/SCIM, not Terraform user records.
-- remote backend is selected at runtime (`azurerm` or `s3`).
+- `organization/` is ORGADMIN-only account lifecycle;
+- `identity/<env>/` owns platform Terraform service user/WIF bootstrap;
+- routine `{dev,uat,prod}/` roots own stable account/domain infrastructure;
+- `project-identity/<env>/` owns project workload service users/WIF bindings after platform roles exist;
+- `workspace-access` owns stable DEV personal/CI permission boundaries, not individual ephemeral schemas;
+- `snowflake/control/` owns native operational SQL inside the Terraform-created `PLATFORM_CONTROL` structural boundary;
+- employee membership comes from IdP/SCIM, not Terraform user records;
+- remote backend is selected at runtime (`azurerm` or `s3`);
 - Terraform state/credentials/secret-bearing tfvars are never committed.
+
+Ten lifecycle/state roots exist: organization, three platform identities, three routine platform states and three project-identity states.
 
 ## 3. `enterprise-snowflake-data-project-framework`
 
-Current implemented baseline:
+Significant structure:
 
 ```text
 enterprise-snowflake-data-project-framework/
@@ -92,72 +86,42 @@ enterprise-snowflake-data-project-framework/
 ├── pyproject.toml
 ├── requirements-dbt.txt
 ├── src/enterprise_snowflake_framework/
-│   ├── __init__.py
-│   ├── workspaces.py
-│   ├── query_tags.py
-│   ├── metadata_validation.py
-│   ├── targets.py
-│   └── dbt_vars.py
 ├── project_schema/
-│   ├── project.schema.json
-│   ├── dataset.schema.json
-│   └── raw_contract.schema.json
 ├── validation/
-│   └── validate_metadata.py
 ├── scripts/
-│   ├── render_workspace_sql.py
-│   ├── render_query_tag.py
-│   ├── resolve_dbt_target.py
-│   ├── render_dbt_vars.py
-│   └── assert_dbt_manifest.py
 ├── dbt_package/
 │   ├── dbt_project.yml
-│   └── macros/
-│       ├── environment/targets.sql
-│       └── loading/strategies.sql
+│   ├── macros/
+│   └── tests/
 ├── examples/
-│   ├── minimal-project/
-│   └── dbt-smoke/
 ├── tests/
-│   ├── test_workspaces.py
-│   ├── test_query_tags.py
-│   ├── test_metadata_validation.py
-│   ├── test_targets.py
-│   └── test_dbt_vars.py
 ├── docs/patterns/
-│   └── workspaces-and-query-tags.md
 └── .github/
     ├── actions/
-    │   ├── validate-metadata/action.yml
-    │   └── dbt-static-check/action.yml
+    │   ├── validate-metadata/
+    │   └── dbt-static-check/
     └── workflows/
         ├── framework-ci.yml
-        └── pr-workspace.yml
+        ├── pr-workspace.yml
+        └── project-deploy.yml
 ```
 
-Implemented shared behavior now includes:
+Implemented shared behavior includes:
 
 ```text
 personal/PR workspace naming + guarded SQL
-canonical JSON QUERY_TAG construction
-project/dataset/RAW metadata schemas + validation
-dbt physical database/schema/warehouse target resolution
-validated metadata -> dbt vars rendering
-basic full_refresh / append_only / incremental_merge dbt configuration
-reusable metadata and offline dbt static CI
+canonical QUERY_TAG construction
+project/dataset/RAW metadata schemas + semantic validation
+dbt physical target/context resolution
+validated metadata -> dbt vars
+basic full_refresh / append_only / incremental_merge configuration
+capture/checkpoint/runtime-quality primitives
+SCD1 and SCD2 snapshot/merge/stream-task primitives
+SCD2 invariant tests + deterministic behavior oracle
+Snowflake-native Stream/Task/Dynamic Table helpers
+reusable metadata/dbt static CI
 reusable PR workspace lifecycle
-```
-
-Next framework growth is real capability, not placeholder directories:
-
-```text
-query-tag/dbt lifecycle integration
-reconciliation/freshness/audit primitives
-checkpoint/watermark helper where semantics can genuinely be common
-scd2 snapshot/merge/stream-task implementations + invariant tests
-DEV deployment workflow/identity contract
-UAT/PROD promotion workflow/identity contract
-rollback/recovery/backfill workflow templates
+reusable immutable project deployment
 ```
 
 Rules:
@@ -165,79 +129,70 @@ Rules:
 - generic technical mechanics belong here; domain business SQL never does;
 - metadata remains a bounded technical contract, not an orchestration DSL;
 - `implementation: custom` stays available for genuine project differences;
-- projects pin framework revisions deliberately.
+- projects pin framework revisions deliberately;
+- workflow security invariants are tested in framework CI.
+
+Remaining framework growth is driven by live verification and real consumers, especially rollback/backfill/recovery automation and later ingestion-specific adapters. Do not create speculative directories.
 
 ## 4. `enterprise-snowflake-health-analytics`
 
-Current implemented shell:
+Significant structure:
 
 ```text
 enterprise-snowflake-health-analytics/
 ├── README.md
 ├── config/
-│   ├── project.yml
-│   └── datasets/patient.yml
-├── contracts/
-│   └── raw/patient.yml
+├── contracts/raw/
 ├── dbt/
-│   ├── dbt_project.yml
-│   ├── packages.yml
-│   ├── profiles.yml
-│   └── macros/target_wrappers.sql
 └── .github/workflows/
     ├── metadata-ci.yml
     ├── dbt-static-ci.yml
-    └── pr-workspace.yml
+    ├── pr-workspace.yml
+    └── deploy.yml
 ```
 
-Health owns Health contracts, future source declarations/models/tests/business rules/semantics. Generic environment/load/workspace/metadata mechanics remain in the framework.
+Health owns its RAW contracts, dataset metadata and business SQL/tests/semantics. Generic environment, capture, SCD, quality, workspace and deployment mechanics remain in the framework.
 
-Add `models/`, `snapshots/`, tests and later Openflow only when their first real implementations are created.
+The first Health `patient` contract is full-change CDC feeding `scd2_merge`; it is not a snapshot source.
 
 ## 5. `enterprise-snowflake-transport-analytics`
 
-Current implemented shell:
+Significant structure:
 
 ```text
 enterprise-snowflake-transport-analytics/
 ├── README.md
 ├── config/
-│   ├── project.yml
-│   └── datasets/vehicle_position.yml
-├── contracts/
-│   └── raw/vehicle_position.yml
+├── contracts/raw/
 ├── dbt/
-│   ├── dbt_project.yml
-│   ├── packages.yml
-│   ├── profiles.yml
-│   └── macros/target_wrappers.sql
 └── .github/workflows/
     ├── metadata-ci.yml
     ├── dbt-static-ci.yml
-    └── pr-workspace.yml
+    ├── pr-workspace.yml
+    └── deploy.yml
 ```
 
-Transport owns its event contract and future business transformations. Direct Snowpipe Streaming and Kafka Connector remain deferred; both must later converge on the same logical RAW contract.
+Transport owns its event contract and business transformations. Direct Snowpipe Streaming and Kafka Connector remain deferred; both must later converge on the same logical RAW contract.
 
 Do not create ingestion directories until implementation begins.
 
 ## 6. `enterprise-snowflake-demo-source-systems`
 
-Target when source implementation begins:
+This repository represents systems outside the Snowflake platform. Add implementation paths only when real source simulation begins.
+
+Expected responsibility areas may include:
 
 ```text
-enterprise-snowflake-demo-source-systems/
-├── README.md
-├── pyproject.toml
-├── sources/{health,transport}/
-├── adapters/{rest,sse,gtfs_realtime}/
-├── sinks/{files,sql_server,snowflake_direct,snowpipe_streaming,kafka}/
-├── scenarios/{normal,late_arriving,out_of_order,duplicates,deletes,bad_data,source_outage,schema_change,volume_spike}/
-├── config/{health,transport}/
-└── tests/{unit,integration}/
+logical Health/Transport source generators
+source mutations/scenarios
+REST/SSE/GTFS-realtime adapters
+file/SQL-source simulators
+Kafka producer
+Snowpipe Streaming producer
+integration tests
 ```
 
-It represents systems outside Snowflake and stops at the project-owned RAW boundary.
+It must not contain dbt transformations, canonical models, marts, Semantic Views or downstream platform reconciliation logic.
 
 ## 7. Dependency direction
 
@@ -264,35 +219,30 @@ Rules:
 - source simulator never depends on downstream analytics;
 - Health and Transport do not call each other directly.
 
-## 8. Current next growth
+## 8. Current growth boundary
 
-Completed since the earlier layout plan:
-
-```text
-dbt target resolution                      ✅
-project metadata/RAW contracts              ✅
-reusable metadata validation                ✅
-offline project dbt parse                    ✅
-basic standard load configuration            ✅
-```
-
-Next:
+Already implemented in source/static CI:
 
 ```text
-QUERY_TAG integration into dbt lifecycle
-reconciliation/freshness/audit primitives
-checkpoint/watermark helper
-SCD2 implementations + invariant tests
-thin DEV/UAT/PROD project-delivery contracts
+dbt target/context resolution
+metadata/RAW contracts and validation
+query tags
+capture/checkpoint/quality primitives
+SCD1/SCD2 reusable mechanics and invariants
+PR workspace lifecycle
+stable immutable deployment workflow
+project CI/deployment WIF identity roots
 ```
 
-Still deliberately deferred:
+Still deliberately deferred until live DEV proof:
 
 ```text
 Kafka Connector
-Snowpipe Streaming
+Direct Snowpipe Streaming
 Openflow
-full governance policies
+full rollback/backfill automation
 full observability dashboards
-production rollback automation
+advanced governance policy rollout
 ```
+
+For the current exact release SHA, verified CI runs and blockers, read `docs/CURRENT_CONTEXT.md` rather than encoding those volatile facts here.
