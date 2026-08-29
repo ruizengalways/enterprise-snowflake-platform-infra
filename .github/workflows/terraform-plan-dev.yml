@@ -21,11 +21,10 @@ jobs:
       TF_IN_AUTOMATION: "true"
       TF_INPUT: "false"
 
-      # Remote-state backend. Empty defaults to azurerm for the Microsoft-first
-      # reference path; set explicitly to azurerm or s3 in the GitHub Environment.
+      # Empty defaults to azurerm for the Microsoft-first reference path.
       TF_STATE_BACKEND: ${{ vars.TF_STATE_BACKEND }}
 
-      # Azure Blob backend inputs (used only when TF_STATE_BACKEND=azurerm).
+      # Azure Blob inputs (only when backend=azurerm).
       ARM_USE_OIDC: "true"
       ARM_USE_AZUREAD: "true"
       ARM_TENANT_ID: ${{ vars.AZURE_TENANT_ID }}
@@ -33,12 +32,12 @@ jobs:
       TF_STATE_STORAGE_ACCOUNT: ${{ vars.TF_STATE_STORAGE_ACCOUNT }}
       TF_STATE_CONTAINER: ${{ vars.TF_STATE_CONTAINER }}
 
-      # AWS S3 backend inputs (used only when TF_STATE_BACKEND=s3).
+      # AWS S3 inputs (only when backend=s3).
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_REGION: ${{ vars.TF_STATE_REGION }}
       AWS_TERRAFORM_STATE_ROLE_ARN: ${{ vars.AWS_TERRAFORM_STATE_ROLE_ARN }}
 
-      # Snowflake WIF inputs are independent of the Terraform state backend.
+      # Snowflake WIF is independent of the state backend.
       SNOWFLAKE_ORGANIZATION_NAME: ${{ vars.SNOWFLAKE_ORGANIZATION_NAME }}
       SNOWFLAKE_ACCOUNT_NAME: ${{ vars.SNOWFLAKE_ACCOUNT_NAME }}
       SNOWFLAKE_OIDC_AUDIENCE: ${{ vars.SNOWFLAKE_OIDC_AUDIENCE }}
@@ -52,6 +51,7 @@ jobs:
           persist-credentials: false
 
       - name: Resolve and verify environment configuration
+        id: config
         shell: bash
         run: |
           set -euo pipefail
@@ -64,6 +64,7 @@ jobs:
               exit 1
               ;;
           esac
+          echo "backend=${backend}" >> "${GITHUB_OUTPUT}"
           echo "TF_STATE_BACKEND=${backend}" >> "${GITHUB_ENV}"
 
           for name in \
@@ -104,7 +105,7 @@ jobs:
         run: bash terraform/scripts/select-backend.sh "${TF_STATE_BACKEND}" terraform/stacks/dev
 
       - name: Configure AWS credentials for S3 state
-        if: env.TF_STATE_BACKEND == 's3'
+        if: steps.config.outputs.backend == 's3'
         uses: aws-actions/configure-aws-credentials@v6.2.3
         with:
           role-to-assume: ${{ vars.AWS_TERRAFORM_STATE_ROLE_ARN }}
@@ -144,7 +145,7 @@ jobs:
           terraform_wrapper: false
 
       - name: Terraform init with Azure Blob state
-        if: env.TF_STATE_BACKEND == 'azurerm'
+        if: steps.config.outputs.backend == 'azurerm'
         working-directory: terraform/stacks/dev
         shell: bash
         run: |
@@ -156,7 +157,7 @@ jobs:
             -backend-config="key=enterprise-snowflake-platform-infra/platform/dev/terraform.tfstate"
 
       - name: Terraform init with S3 state
-        if: env.TF_STATE_BACKEND == 's3'
+        if: steps.config.outputs.backend == 's3'
         working-directory: terraform/stacks/dev
         shell: bash
         run: |
