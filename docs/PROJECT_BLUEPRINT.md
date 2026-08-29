@@ -4,7 +4,7 @@
 >
 > **Authority:** Canonical long-term architecture for the Enterprise Snowflake Platform.
 >
-> **Fast handoff:** Read [`CURRENT_CONTEXT.md`](CURRENT_CONTEXT.md) first for current SHAs, verified runs and immediate next actions.
+> **Fast handoff:** Read [`CURRENT_CONTEXT.md`](CURRENT_CONTEXT.md) first for current SHAs, verified runs and immediate next actions. For pipeline-pattern support boundaries, also read [`architecture/PIPELINE_PATTERN_COVERAGE.md`](architecture/PIPELINE_PATTERN_COVERAGE.md).
 
 ## 1. Goal
 
@@ -338,7 +338,33 @@ RAW preservation rules:
 - Streams are delta/offset consumers, not the complete CDC history store;
 - source fidelity limits downstream history guarantees.
 
-See ADR-031 for capture archetypes and Dynamic Table fallback policy.
+The framework follows the same mental model as the audited pipeline catalogue:
+
+```text
+data semantics
+  -> capture / delivery
+  -> cursor / checkpoint
+  -> RAW meaning
+  -> downstream current/history/event meaning
+  -> fidelity / recovery
+```
+
+Current architecture can represent all fourteen audited snapshot/watermark/net-change/full-change/business-event/snapshot-diff patterns. That does not mean every case is first-class metadata or production-ready. Important current gaps are:
+
+```text
+truly keyless sources
+first-class soft-delete-row column/value metadata
+explicit before/after/delta change-image capability
+safe initial snapshot -> incremental/CDC position handoff
+source-retention vs required recovery-window validation
+advanced reconciliation
+schema compatibility/evolution tooling
+replay/backfill workflow templates
+```
+
+A retained soft-delete **row** delivered from a current-state source remains `watermark/current_state`. A change-feed `DELETE`/tombstone **event** is `net_change` or `full_change` depending on feed granularity. Do not collapse those semantics because both may be called “tombstone”.
+
+See ADR-031 for capture archetypes and Dynamic Table fallback policy, and `architecture/PIPELINE_PATTERN_COVERAGE.md` for the full support matrix.
 
 ## 14. Metadata and dbt target model
 
@@ -386,6 +412,10 @@ Framework quality/runtime primitives cover run start/finish, freshness checks, r
 
 Do not duplicate Snowflake-owned runtime state such as Stream offsets into custom control tables.
 
+The shared operational objects exist, but project-runtime authorization is not yet complete. Domain deployment roles must receive a domain-enforced access surface so Health cannot read/write Transport checkpoint/run/check rows and vice versa. Broad table DML or an owner-rights procedure that trusts caller-supplied `project_code` is not acceptable.
+
+See `architecture/OPERATIONAL_CONTROL_ACCESS.md`.
+
 ## 16. SCD architecture
 
 Approved load strategies:
@@ -419,6 +449,8 @@ _ESF_VERSION_ORDINAL
 Reusable invariants cover one-current-row, valid ranges, no overlap and deterministic unique version ordinal.
 
 The framework includes a deterministic SQL behavioral oracle for duplicate replay, no-op state, update, delete/reinsert, late events and ordering ties. Static CI proves parse/render/discovery; live Snowflake execution remains pending.
+
+`esf_scd2_event_history_select()` accepts an explicit effective timestamp and deterministic ordering. CDC/change time must not be assumed to equal business-effective time; business-effective semantics remain explicit project design.
 
 See ADR-035 for SCD consumer semantics.
 
@@ -461,7 +493,9 @@ Do not create database-per-source merely for chargeback.
 
 Derived data recovery should prefer Snowflake-native Time Travel / zero-copy CLONE / controlled SWAP where appropriate. RAW evidence should not be blindly rolled back if it represents authoritative source history.
 
-Recovery/backfill automation is not yet complete and remains a later implementation item after live DEV behavior is proven.
+Recovery should repair/replay the highest trustworthy layer and then execute normal downstream logic. A pattern is not production-ready merely because the happy-path load works; retention, replay range, idempotency and reconciliation must be proven together.
+
+Recovery/backfill automation is not yet complete. Reusable replay/backfill workflow templates, safe bootstrap/handoff and source-retention/recovery-window validation remain explicit gaps before broad ingestion rollout.
 
 ## 20. Current domain contracts
 
@@ -477,7 +511,7 @@ fidelity:            full_change
 checkpoint:          source_position
 ordering:            source_sequence
 idempotency:         patient_id + source_sequence
-change semantics:    CDC + tombstone delete
+change semantics:    CDC + tombstone delete event
 freshness:           warn 60 min / error 120 min
 ```
 
@@ -504,6 +538,11 @@ Source/static CI proves structure, HCL/provider schemas, metadata validation, db
 
 It does **not** prove:
 
+- domain-safe project runtime access to `PLATFORM_CONTROL` state;
+- safe initial snapshot-to-incremental/CDC position handoff;
+- keyless-source support;
+- soft-delete-row or source image semantics not yet represented by v1 metadata;
+- broader reconciliation/schema-evolution/replay automation;
 - real remote-state access;
 - real Snowflake account bootstrap/import;
 - live WIF authentication;
@@ -517,21 +556,35 @@ These remain part of the live verification gate.
 
 ## 22. Immediate execution order
 
+Work that does not require a live cloud/Snowflake account should close the known safe-runtime gaps first:
+
 ```text
-1. choose/provision authoritative remote state
-2. bootstrap/import Snowflake accounts
-3. bootstrap identity/dev
-4. reviewed platform/dev plan/apply
-5. verify DEV RBAC/warehouses/PLATFORM_CONTROL
-6. bootstrap project-identity/dev
-7. configure Health/Transport GitHub Environments ci + dev
-8. prove real PR workspace create/drop
-9. prove immutable main-history DEV deployment
-10. execute live SCD2 behavioral oracle
-11. repeat controlled pattern for UAT
-12. repeat protected pattern for PROD
-13. only then start streaming-ingestion comparison work
+1. implement domain-scoped PLATFORM_CONTROL operational access
+2. add static tests proving cross-domain checkpoint/run/check isolation
+3. define the smallest safe initial-load / position-P handoff contract for a real incremental/CDC source
 ```
+
+Then execute the live control-plane gate:
+
+```text
+4. choose/provision authoritative remote state
+5. bootstrap/import Snowflake accounts
+6. bootstrap identity/dev
+7. reviewed platform/dev plan/apply
+8. verify DEV RBAC/warehouses/PLATFORM_CONTROL
+9. bootstrap project-identity/dev
+10. configure Health/Transport GitHub Environments ci + dev
+11. prove real PR workspace create/drop
+12. prove immutable main-history DEV deployment
+13. prove cross-domain operational-state denial
+14. execute live SCD2 behavioral oracle
+15. prove one real incremental/CDC bootstrap + retry + reconciliation + recovery path
+16. repeat controlled pattern for UAT
+17. repeat protected pattern for PROD
+18. only then start streaming-ingestion comparison work
+```
+
+Do not pre-build a large source DSL. Add soft-delete/image/keyless metadata only when a real source proves a reusable need.
 
 ## 23. Deferred technologies
 
