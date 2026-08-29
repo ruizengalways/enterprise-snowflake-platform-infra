@@ -13,9 +13,17 @@ projects:
   health:
     code: HEALTH
     repository: enterprise-snowflake-health-analytics
+    warehouse_keys:
+      query: health_query
+      transform: health_transform
+      ci: health_ci
   transport:
     code: TRANSPORT
     repository: enterprise-snowflake-transport-analytics
+    warehouse_keys:
+      query: transport_query
+      transform: transport_transform
+      ci: transport_ci
 
 # Database boundary is environment x data product. CI stays in the DEV account
 # but uses separate project databases so ephemeral PR work cannot collide with DEV.
