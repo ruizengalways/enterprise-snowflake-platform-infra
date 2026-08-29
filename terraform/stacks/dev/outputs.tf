@@ -14,11 +14,21 @@ output "platform_control_database" {
 }
 
 output "account_roles" {
-  description = "DEV account platform and project capability roles."
+  description = "DEV account platform and human domain capability roles."
   value       = module.rbac.account_role_names
 }
 
 output "database_roles" {
-  description = "DEV account project database roles."
+  description = "DEV stable database human domain roles."
   value       = module.rbac.database_role_fully_qualified_names
+}
+
+output "ci_account_roles" {
+  description = "DEV machine-only CI account roles keyed by domain."
+  value       = module.workspace_access.ci_account_roles
+}
+
+output "ci_database_roles" {
+  description = "DEV CI workspace database roles keyed by CI database."
+  value       = module.workspace_access.ci_database_roles
 }
