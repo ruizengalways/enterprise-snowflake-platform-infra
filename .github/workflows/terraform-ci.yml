@@ -57,7 +57,9 @@ jobs:
           - dev
           - project-identity/dev
           - uat
+          - project-identity/uat
           - prod
+          - project-identity/prod
 
     steps:
       - name: Checkout
