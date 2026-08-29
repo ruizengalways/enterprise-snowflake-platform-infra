@@ -1,7 +1,9 @@
 locals {
   platform_capabilities = toset(["READER", "ENGINEER", "ADMIN"])
-  project_capabilities  = toset(["GUEST", "READER", "DEVELOPER", "ADMIN"])
-  database_access       = toset(["GUEST", "READ", "WRITE", "OWNER"])
+  # DEPLOY is intentionally an independent machine capability. It is not part of
+  # the human GUEST -> READER -> DEVELOPER -> ADMIN inheritance chain.
+  project_capabilities = toset(["GUEST", "READER", "DEVELOPER", "ADMIN", "DEPLOY"])
+  database_access      = toset(["GUEST", "READ", "WRITE", "OWNER"])
 
   platform_roles = {
     for capability in local.platform_capabilities :
@@ -125,8 +127,9 @@ resource "snowflake_grant_account_role" "platform_engineer_to_admin" {
   parent_role_name = snowflake_account_role.this["PLATFORM|ADMIN"].name
 }
 
-# Domain capability inheritance: GUEST -> READER -> DEVELOPER -> ADMIN.
-# GUEST is intentionally the narrow published-data consumer role.
+# Domain human capability inheritance: GUEST -> READER -> DEVELOPER -> ADMIN.
+# DEPLOY stays outside this chain so employee persona assignment can never imply
+# project deployment authority.
 resource "snowflake_grant_account_role" "project_guest_to_reader" {
   provider = snowflake.securityadmin
   for_each = var.project_codes
@@ -152,7 +155,8 @@ resource "snowflake_grant_account_role" "project_developer_to_admin" {
 }
 
 # Keep custom roles reachable from the Snowflake system-role hierarchy without
-# making platform administration imply domain administration.
+# making platform administration imply domain administration. DEPLOY remains an
+# independent role even though SYSADMIN can administer/assume it.
 resource "snowflake_grant_account_role" "platform_admin_to_sysadmin" {
   provider = snowflake.securityadmin
 
@@ -165,6 +169,14 @@ resource "snowflake_grant_account_role" "project_admin_to_sysadmin" {
   for_each = var.project_codes
 
   role_name        = snowflake_account_role.this["${each.value}|ADMIN"].name
+  parent_role_name = "SYSADMIN"
+}
+
+resource "snowflake_grant_account_role" "project_deploy_to_sysadmin" {
+  provider = snowflake.securityadmin
+  for_each = var.project_codes
+
+  role_name        = snowflake_account_role.this["${each.value}|DEPLOY"].name
   parent_role_name = "SYSADMIN"
 }
 
@@ -339,6 +351,8 @@ resource "snowflake_grant_privileges_to_database_role" "read_future_objects" {
 }
 
 # WRITE adds only the core schema-level DDL needed for ordinary dbt development.
+# Stateful/background Snowflake objects are deliberately excluded here and are
+# granted separately to the independent DEPLOY machine role.
 resource "snowflake_grant_privileges_to_database_role" "write_schema_ddl" {
   provider = snowflake.sysadmin
   for_each = local.schema_entries
