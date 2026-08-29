@@ -328,7 +328,7 @@ uat
 prod
 ```
 
-and now also materialises/validates both backend declarations:
+and materialises/validates both backend declarations:
 
 ```text
 azurerm
@@ -336,6 +336,16 @@ s3
 ```
 
 without connecting to either cloud.
+
+Latest verified static CI run:
+
+```text
+GitHub Actions run: 33222590387
+Commit:             7d9b345ba21ccf34fe276b7906ba6a4a213775b6
+Result:             SUCCESS
+```
+
+All ten jobs succeeded: formatting/selector syntax, all seven Terraform roots, Azure Blob backend profile and S3 backend profile.
 
 `.github/workflows/terraform-plan-dev.yml` is manual-only and supports `TF_STATE_BACKEND=azurerm|s3`; empty defaults to `azurerm` as the Microsoft-first reference. It uses GitHub OIDC for the selected state backend and separately obtains a Snowflake OIDC token for WIF. It performs plan only, not apply.
 
