@@ -2,11 +2,11 @@
 
 ## Status
 
-Phase 1 source/static-CI baseline. Azure Blob/S3 backend profiles, platform Terraform WIF, DEV project-CI WIF source and the manual DEV plan path exist. No real remote state or Snowflake identity has been applied yet.
+Phase 1 source/static-CI baseline. Azure Blob/S3 backend profiles, platform Terraform WIF, project CI/deployment WIF source, immutable project deployment workflows, and the manual DEV platform-plan path exist. No real remote state or Snowflake identity has been applied yet.
 
 ## Control-plane principle
 
-Terraform state, platform Terraform identity and project delivery identity are separate concerns:
+Terraform state, platform Terraform identity and project delivery identities are separate concerns:
 
 ```text
 GitHub Actions
@@ -19,9 +19,13 @@ GitHub Actions
 │          -> AR_TERRAFORM_<ENV>
 │          -> platform Terraform
 │
-└── OIDC -> SU_GITHUB_<DOMAIN>_CI
-           -> AR_<DOMAIN>_CI
-           -> PR workspace lifecycle
+├── OIDC -> SU_GITHUB_<DOMAIN>_CI
+│          -> AR_<DOMAIN>_CI
+│          -> PR workspace lifecycle
+│
+└── OIDC -> SU_GITHUB_<DOMAIN>_DEPLOY
+           -> AR_<DOMAIN>_DEPLOY
+           -> stable DEV/UAT/PROD project deployment
 ```
 
 Changing the state backend does not change Snowflake RBAC/domain design.
@@ -52,7 +56,7 @@ Azure Blob is the Microsoft-first reference. S3 remains a supported AWS referenc
 
 ## State layout
 
-There are now eight lifecycle state objects:
+There are ten independent lifecycle state objects:
 
 ```text
 enterprise-snowflake-platform-infra/organization/terraform.tfstate
@@ -60,25 +64,29 @@ enterprise-snowflake-platform-infra/identity/dev/terraform.tfstate
 enterprise-snowflake-platform-infra/identity/uat/terraform.tfstate
 enterprise-snowflake-platform-infra/identity/prod/terraform.tfstate
 enterprise-snowflake-platform-infra/platform/dev/terraform.tfstate
-enterprise-snowflake-platform-infra/project-identity/dev/terraform.tfstate
 enterprise-snowflake-platform-infra/platform/uat/terraform.tfstate
 enterprise-snowflake-platform-infra/platform/prod/terraform.tfstate
+enterprise-snowflake-platform-infra/project-identity/dev/terraform.tfstate
+enterprise-snowflake-platform-infra/project-identity/uat/terraform.tfstate
+enterprise-snowflake-platform-infra/project-identity/prod/terraform.tfstate
 ```
 
-Why the extra DEV project-identity state:
+Why project identities are separate from platform state:
 
 ```text
-identity/dev
+identity/<env>
   creates platform Terraform identity
         ↓
-platform/dev
-  creates AR_<DOMAIN>_CI roles
+platform/<env>
+  creates AR_<DOMAIN>_DEPLOY
+  DEV also creates AR_<DOMAIN>_CI
         ↓
-project-identity/dev
-  creates project CI service users bound to those existing roles
+project-identity/<env>
+  creates project service users and WIF trusts
+  bound to those existing machine roles
 ```
 
-Combining these would either create a dependency cycle or let routine platform state own a delivery identity it should not control.
+Combining these lifecycles would make routine platform state own delivery identities and blur bootstrap authority. Each root uses the same selectable backend adapter but a distinct state key.
 
 A deployment chooses one authoritative backend. Do not keep Azure Blob and S3 simultaneously writable for the same state.
 
@@ -148,45 +156,63 @@ repo:ruizengalways/enterprise-snowflake-platform-infra:environment:uat
 repo:ruizengalways/enterprise-snowflake-platform-infra:environment:prod
 ```
 
-## DEV project-CI identities
+## Project workload identities
 
-Root:
+Roots:
 
 ```text
 terraform/stacks/project-identity/dev/
+terraform/stacks/project-identity/uat/
+terraform/stacks/project-identity/prod/
 ```
 
-Generic module:
+Generic identity-only module:
 
 ```text
 terraform/modules/service-identity/
 ```
 
-Current identities:
+DEV creates both PR-CI and stable deployment identities:
 
 ```text
-SU_GITHUB_HEALTH_CI
-  -> AR_HEALTH_CI
-  -> subject repo:ruizengalways/enterprise-snowflake-health-analytics:environment:ci
-
-SU_GITHUB_TRANSPORT_CI
-  -> AR_TRANSPORT_CI
-  -> subject repo:ruizengalways/enterprise-snowflake-transport-analytics:environment:ci
+SU_GITHUB_HEALTH_CI      -> AR_HEALTH_CI
+SU_GITHUB_TRANSPORT_CI   -> AR_TRANSPORT_CI
+SU_GITHUB_HEALTH_DEPLOY  -> AR_HEALTH_DEPLOY
+SU_GITHUB_TRANSPORT_DEPLOY -> AR_TRANSPORT_DEPLOY
 ```
 
-The module creates only the SERVICE user/WIF trust and grants an existing role. It does not create account-level privileges.
+UAT and PROD create deployment identities only:
 
-`project-identity/dev` must execute after `platform/dev` because the CI roles are owned by the platform state.
+```text
+SU_GITHUB_<DOMAIN>_DEPLOY -> AR_<DOMAIN>_DEPLOY
+```
 
-See ADR-027.
+The module creates only the Snowflake SERVICE user/WIF trust and grants an existing account role. Role capabilities remain owned by platform RBAC Terraform.
+
+Execution dependency:
+
+```text
+platform/<env> -> project-identity/<env>
+```
+
+The platform root must create `AR_<DOMAIN>_DEPLOY` first. In DEV it also creates `AR_<DOMAIN>_CI` before project identities are bootstrapped.
+
+Project OIDC subjects are analytics-repository + GitHub Environment scoped, for example:
+
+```text
+repo:ruizengalways/enterprise-snowflake-health-analytics:environment:ci
+repo:ruizengalways/enterprise-snowflake-health-analytics:environment:dev
+repo:ruizengalways/enterprise-snowflake-health-analytics:environment:uat
+repo:ruizengalways/enterprise-snowflake-health-analytics:environment:prod
+```
+
+Transport uses the Transport repository in the same pattern. A Health workflow therefore cannot authenticate as a Transport workload identity.
 
 ## Account-scoped OIDC audience
 
 Platform and project identities require a non-empty account-scoped Snowflake OIDC audience. The shared `snowflakecomputing.com` audience is rejected by the Terraform modules.
 
-The Snowflake first-party GitHub action currently configures `snowflakecomputing.com` automatically when `use-oidc: true`; therefore the reusable project PR workflow installs the action/CLI with `use-oidc: false`, explicitly requests a GitHub token with the configured account-scoped audience, and exports that short-lived token to Snowflake CLI.
-
-This preserves the account-scoped audience security boundary without storing a password/private key.
+Reusable project workflows explicitly request a GitHub OIDC token with the configured account-scoped audience and pass the short-lived token to Snowflake/dbt. This preserves the account boundary without storing a password/private key.
 
 ## GitHub Environments
 
@@ -202,16 +228,21 @@ Health and Transport project repositories:
 
 ```text
 ci
+dev
+uat
+prod
 ```
 
-Project `ci` environment must eventually define:
+Each project environment used for Snowflake workload identity must define:
 
 ```text
 SNOWFLAKE_ACCOUNT
 SNOWFLAKE_OIDC_AUDIENCE
 ```
 
-The Snowflake service user, role, warehouse and database are convention-derived from the domain code by the reusable workflow.
+The Snowflake service user, role, warehouse and database are convention-derived from domain code and target environment by the reusable framework workflows.
+
+Use environment protection/review rules appropriate to risk. PROD should require stronger approval than DEV; repository branches do not represent environments.
 
 ## DEV platform plan
 
@@ -230,33 +261,71 @@ Thin project callers are pinned to a framework commit. The reusable workflow:
 1. targets GitHub Environment `ci`;
 2. validates the domain/action inputs;
 3. renders framework-owned QUERY_TAG/workspace SQL;
-4. installs a pinned Snowflake Action + Snowflake CLI;
-5. requests a custom-audience GitHub OIDC token;
-6. connects as `SU_GITHUB_<DOMAIN>_CI` with `AR_<DOMAIN>_CI`;
-7. executes only the generated local workspace SQL;
-8. creates on PR open/reopen/synchronize and drops on PR close.
+4. requests a custom-audience GitHub OIDC token;
+5. connects as `SU_GITHUB_<DOMAIN>_CI` with `AR_<DOMAIN>_CI`;
+6. executes only the generated local workspace SQL;
+7. creates on PR open/reopen/synchronize and drops on PR close.
 
-It does not yet execute untrusted project PR business code under Snowflake credentials.
+It does not execute untrusted project PR business code under Snowflake credentials.
+
+## Stable project deployment workflow
+
+Framework:
+
+```text
+enterprise-snowflake-data-project-framework/.github/workflows/project-deploy.yml
+```
+
+Health and Transport expose thin manual callers. The reusable workflow:
+
+1. accepts only `dev`, `uat` or `prod`;
+2. requires a full 40-character project Git SHA;
+3. requires a full 40-character framework SHA;
+4. checks out both immutable revisions;
+5. verifies the project's dbt package pin matches the framework deployment SHA;
+6. targets the corresponding protected GitHub Environment;
+7. requests an account-scoped OIDC token;
+8. connects as `SU_GITHUB_<DOMAIN>_DEPLOY` / `AR_<DOMAIN>_DEPLOY`;
+9. runs dbt against `<ENV>_<DOMAIN>` on `WH_<DOMAIN>_TRANSFORM`.
+
+Promotion therefore changes the target environment, not the code revision. The same project SHA can be promoted DEV -> UAT -> PROD.
 
 ## Real execution order
 
 ```text
 remote state control plane
 -> organization bootstrap/import
--> identity/dev
+
+DEV:
+   identity/dev
 -> platform/dev plan/apply/verify
 -> project-identity/dev
--> configure Health/Transport GitHub Environment ci
+-> configure project GitHub Environments ci + dev
 -> real PR workspace create/drop test
--> UAT
--> PROD
+-> real DEV immutable project deployment test
+
+UAT:
+   identity/uat
+-> platform/uat plan/apply/verify
+-> project-identity/uat
+-> configure project GitHub Environment uat
+-> promote an already-verified project Git SHA
+
+PROD:
+   identity/prod
+-> platform/prod protected plan/apply/verify
+-> project-identity/prod
+-> configure protected project GitHub Environment prod
+-> promote the exact approved project Git SHA
 ```
+
+Human UAT/PROD transform warehouse access is not part of this routine path. Emergency execution is JIT/break-glass through enterprise identity governance.
 
 ## References
 
 - ADR-023 — platform Terraform GitHub OIDC identity.
 - ADR-024 — Azure Blob/S3 backend adapters.
 - ADR-025 — DEV personal and PR CI workspace lifecycle.
-- ADR-027 — project PR-CI OIDC identity lifecycle.
+- ADR-027 — project workload OIDC identity lifecycle.
 - `docs/CURRENT_CONTEXT.md`
 - `docs/runbooks/terraform-platform-bootstrap.md`
