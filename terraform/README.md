@@ -19,13 +19,11 @@ terraform/
 └── stacks/
     ├── organization/
     ├── identity/{dev,uat,prod}/
-    ├── dev/
-    ├── project-identity/dev/
-    ├── uat/
-    └── prod/
+    ├── {dev,uat,prod}/
+    └── project-identity/{dev,uat,prod}/
 ```
 
-Every root commits `.terraform.lock.hcl`; CI uses `-lockfile=readonly`.
+Every root commits `.terraform.lock.hcl`; static CI uses read-only lock mode.
 
 ## Versions
 
@@ -36,16 +34,15 @@ Snowflake provider:  2.19.0
 
 ## Lifecycle order
 
+Per environment:
+
 ```text
-organization
--> identity/dev
--> platform/dev
--> project-identity/dev
--> UAT
--> PROD
+identity/<env>
+  -> platform/<env>
+      -> project-identity/<env>
 ```
 
-`organization/` alone uses ORGADMIN.
+Organization bootstrap/import happens before environment rollout and is the only ORGADMIN lifecycle.
 
 `identity/<env>` bootstraps:
 
@@ -55,11 +52,19 @@ SU_GITHUB_TERRAFORM_<ENV> -> AR_TERRAFORM_<ENV>
 
 Routine `dev/uat/prod` activates only `AR_TERRAFORM_<ENV>`.
 
-`project-identity/dev` runs after `platform/dev` and binds project WIF service users to existing machine CI roles:
+`project-identity/<env>` runs after the platform root and binds project WIF service users to already-existing machine roles.
+
+DEV:
 
 ```text
-SU_GITHUB_HEALTH_CI    -> AR_HEALTH_CI
-SU_GITHUB_TRANSPORT_CI -> AR_TRANSPORT_CI
+SU_GITHUB_<DOMAIN>_CI     -> AR_<DOMAIN>_CI
+SU_GITHUB_<DOMAIN>_DEPLOY -> AR_<DOMAIN>_DEPLOY
+```
+
+UAT/PROD:
+
+```text
+SU_GITHUB_<DOMAIN>_DEPLOY -> AR_<DOMAIN>_DEPLOY
 ```
 
 The generic `service-identity` module creates only SERVICE user/WIF + role assignment; it does not create/expand the role or grant account-level privileges.
@@ -73,7 +78,7 @@ CREATE WAREHOUSE
 MANAGE GRANTS
 ```
 
-Routine Terraform does not use ACCOUNTADMIN/SYSADMIN/SECURITYADMIN.
+Routine Terraform does not activate ACCOUNTADMIN/SYSADMIN/SECURITYADMIN. Privileges are widened only after a live plan/apply demonstrates a specific gap.
 
 ## Domain infrastructure
 
@@ -84,9 +89,12 @@ CI_<DOMAIN>   # DEV account only
 AR_<DOMAIN>_GUEST -> READER -> DEVELOPER -> ADMIN
 DR_<DOMAIN>_ANALYTICS_GUEST -> READ -> WRITE -> OWNER
 
+AR_<DOMAIN>_CI      # machine-only PR CI in DEV
+AR_<DOMAIN>_DEPLOY  # machine-only stable delivery
+
 WH_<DOMAIN>_QUERY
 WH_<DOMAIN>_TRANSFORM
-WH_<DOMAIN>_CI
+WH_<DOMAIN>_CI      # DEV only
 ```
 
 Project metadata declares query/transform/CI warehouse keys, so grants are derived instead of hard-coded per Health/Transport.
@@ -95,40 +103,30 @@ Project metadata declares query/transform/CI warehouse keys, so grants are deriv
 
 Human domain RBAC attaches only to `DEV_<DOMAIN>`.
 
-DEV WRITE receives:
-
-```text
-CREATE SCHEMA on DEV_<DOMAIN>
-```
-
-for personal `<DEVELOPER>_<LAYER>` namespaces. This naming convention is not per-person security isolation.
+DEV WRITE receives `CREATE SCHEMA` on `DEV_<DOMAIN>` for personal `<DEVELOPER>_<LAYER>` namespaces. This naming convention is not per-person security isolation.
 
 PR CI is machine-only:
 
 ```text
 AR_<DOMAIN>_CI
   -> CI_<DOMAIN>.DR_<DOMAIN>_CI_WORKSPACE
-      -> USAGE + CREATE SCHEMA
   -> WH_<DOMAIN>_CI
+  -> EXECUTE TASK
 ```
 
 Human GUEST/READER/DEVELOPER/ADMIN roles do not attach to CI databases.
 
-## Project CI identity boundary
-
-DEV metadata contains only shared non-secret identity convention inputs (`github_owner`, environment `ci`, OIDC issuer) plus each project's existing code/repository.
-
-Terraform derives:
+## Stable project deployment
 
 ```text
-service user: SU_GITHUB_<DOMAIN>_CI
-role:         AR_<DOMAIN>_CI
-subject:      repo:<owner>/<project-repo>:environment:ci
+AR_<DOMAIN>_DEPLOY
+  -> DR_<DOMAIN>_ANALYTICS_WRITE
+  -> WH_<DOMAIN>_TRANSFORM
+  -> CREATE STREAM/TASK/DYNAMIC TABLE
+  -> EXECUTE TASK
 ```
 
-The DEV account-scoped Snowflake OIDC audience remains an external bootstrap input.
-
-See ADR-027.
+This role is outside the human hierarchy. UAT/PROD human roles receive no permanent transform warehouse grant in the baseline; emergency execution is JIT/break-glass through enterprise identity governance.
 
 ## Remote state
 
@@ -139,9 +137,9 @@ azurerm -> Azure Blob
 s3      -> Amazon S3
 ```
 
-via `terraform/scripts/select-backend.sh`, which materialises ignored `backend.generated.tf`.
+through `terraform/scripts/select-backend.sh`, which materializes ignored `backend.generated.tf`.
 
-There are eight state objects:
+There are ten state objects:
 
 ```text
 organization
@@ -149,12 +147,14 @@ identity/dev
 identity/uat
 identity/prod
 platform/dev
-project-identity/dev
 platform/uat
 platform/prod
+project-identity/dev
+project-identity/uat
+project-identity/prod
 ```
 
-OneDrive/SharePoint is not live Terraform state.
+One backend is authoritative for a deployment. OneDrive/SharePoint is not live Terraform state.
 
 ## Static CI
 
@@ -167,31 +167,36 @@ identity/dev
 identity/uat
 identity/prod
 dev
-project-identity/dev
 uat
 prod
+project-identity/dev
+project-identity/uat
+project-identity/prod
 backend azurerm
 backend s3
 ```
 
-The project-identity root has passed Snowflake provider 2.19.0 init/validate in CI.
+Static validation proves HCL/provider-schema correctness, not live Snowflake authorization.
 
-Static validation does not prove live Snowflake authorization.
-
-## DEV remote plan
-
-`terraform-plan-dev.yml` remains manual-only and plan-only. No automated apply exists yet.
-
-Live progression must be:
+## Live progression
 
 ```text
 remote state
+-> organization bootstrap/import
 -> identity/dev
 -> platform/dev reviewed plan/apply + verification
 -> project-identity/dev
--> real project PR workspace test
+-> real PR workspace WIF test
+-> real immutable DEV project deployment test
+-> live SCD2 behavior test
+-> UAT lifecycle
+-> protected PROD lifecycle
 ```
+
+`terraform-plan-dev.yml` remains manual-only and plan-only. No automated Terraform apply exists yet.
 
 ## Employee identity
 
-Terraform defines roles/privileges. Employee joins/leaves belong to enterprise IdP/SCIM, not Terraform user records.
+Terraform defines roles/privileges. Employee joins/leaves and temporary break-glass access belong to enterprise IdP/SCIM/identity governance, not Terraform user records.
+
+See `docs/standards/TERRAFORM_STANDARDS.md`, `docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md` and ADR-034.
