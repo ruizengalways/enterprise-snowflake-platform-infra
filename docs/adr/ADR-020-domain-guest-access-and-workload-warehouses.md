@@ -1,6 +1,6 @@
 # ADR-020 — Domain guest access and workload warehouses
 
-- **Status:** Accepted
+- **Status:** Accepted; UAT/PROD transform execution detail amended by ADR-034
 - **Date:** 2026-08-29
 
 ## Context
@@ -42,7 +42,9 @@ WH_<DOMAIN>_TRANSFORM
 
 DEV additionally receives `WH_<DOMAIN>_CI`. The account already identifies the environment, so ordinary warehouse names do not repeat DEV/UAT/PROD.
 
-GUEST receives QUERY; READER inherits it. DEV DEVELOPER receives TRANSFORM. UAT/PROD ADMIN temporarily receives TRANSFORM until deployment workload identities take over. CI warehouses are machine-only.
+GUEST receives QUERY; READER inherits it. DEV DEVELOPER receives TRANSFORM. CI warehouses are machine-only.
+
+For stable automated delivery, ADR-034 adds the independent machine role `AR_<DOMAIN>_DEPLOY`, which receives `WH_<DOMAIN>_TRANSFORM` in DEV/UAT/PROD. The earlier transitional UAT/PROD ADMIN -> TRANSFORM grant is no longer part of the baseline. Human UAT/PROD emergency transform execution is JIT/break-glass through enterprise identity governance rather than a permanent Terraform grant.
 
 ## Consequences
 
@@ -52,3 +54,4 @@ GUEST receives QUERY; READER inherits it. DEV DEVELOPER receives TRANSFORM. UAT/
 - Role/warehouse naming remains stable across the three accounts.
 - Future projects such as Finance can be onboarded by adding a domain code, project databases, and the same role/warehouse pattern.
 - Published schema policy becomes explicit environment metadata and can evolve without redefining the role hierarchy.
+- Routine UAT/PROD transformation compute is owned by project deployment automation, not a standing human ADMIN grant.
