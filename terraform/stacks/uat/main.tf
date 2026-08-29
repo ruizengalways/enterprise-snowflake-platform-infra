@@ -75,11 +75,21 @@ module "rbac" {
   # Domain admins retain transform compute until deployment machine identity exists.
   grant_developer_write = false
 
-  warehouse_grants = {
-    AR_HEALTH_GUEST      = toset([module.warehouse["health_query"].fully_qualified_name])
-    AR_HEALTH_ADMIN      = toset([module.warehouse["health_transform"].fully_qualified_name])
-    AR_TRANSPORT_GUEST   = toset([module.warehouse["transport_query"].fully_qualified_name])
-    AR_TRANSPORT_ADMIN   = toset([module.warehouse["transport_transform"].fully_qualified_name])
-    AR_PLATFORM_ENGINEER = toset([module.warehouse["platform_ops"].fully_qualified_name])
-  }
+  warehouse_grants = merge(
+    {
+      for project in values(local.config.projects) :
+      "AR_${project.code}_GUEST" => toset([
+        module.warehouse[project.warehouse_keys.query].fully_qualified_name,
+      ])
+    },
+    {
+      for project in values(local.config.projects) :
+      "AR_${project.code}_ADMIN" => toset([
+        module.warehouse[project.warehouse_keys.transform].fully_qualified_name,
+      ])
+    },
+    {
+      AR_PLATFORM_ENGINEER = toset([module.warehouse["platform_ops"].fully_qualified_name])
+    },
+  )
 }
