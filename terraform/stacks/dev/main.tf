@@ -94,6 +94,12 @@ module "rbac" {
       ])
     },
     {
+      for project in values(local.config.projects) :
+      "AR_${project.code}_DEPLOY" => toset([
+        module.warehouse[project.warehouse_keys.transform].fully_qualified_name,
+      ])
+    },
+    {
       AR_PLATFORM_ENGINEER = toset([module.warehouse["platform_ops"].fully_qualified_name])
     },
   )
