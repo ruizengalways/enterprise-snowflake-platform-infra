@@ -1,5 +1,5 @@
 variable "oidc_audience" {
-  description = "DEV Snowflake account-scoped OIDC audience shared by approved project CI service identities."
+  description = "DEV Snowflake account-scoped OIDC audience shared by approved project CI and deployment service identities."
   type        = string
 
   validation {
