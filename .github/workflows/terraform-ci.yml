@@ -40,6 +40,9 @@ jobs:
       - name: Check formatting
         run: terraform fmt -check -recursive terraform
 
+      - name: Check backend selector syntax
+        run: bash -n terraform/scripts/select-backend.sh
+
   validate:
     name: validate ${{ matrix.stack }}
     runs-on: ubuntu-latest
@@ -73,4 +76,37 @@ jobs:
 
       - name: Terraform validate
         working-directory: terraform/stacks/${{ matrix.stack }}
+        run: terraform validate -no-color
+
+  backend-profile:
+    name: validate backend ${{ matrix.backend }}
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        backend:
+          - azurerm
+          - s3
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Select backend profile
+        run: bash terraform/scripts/select-backend.sh "${{ matrix.backend }}" terraform/stacks/dev
+
+      - name: Setup Terraform
+        uses: hashicorp/setup-terraform@v4.0.1
+        with:
+          terraform_version: 1.16.0
+          terraform_wrapper: false
+
+      - name: Terraform init without backend connection
+        working-directory: terraform/stacks/dev
+        run: terraform init -backend=false -input=false -lockfile=readonly
+
+      - name: Terraform validate selected backend profile
+        working-directory: terraform/stacks/dev
         run: terraform validate -no-color
