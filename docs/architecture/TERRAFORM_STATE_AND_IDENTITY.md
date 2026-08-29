@@ -2,54 +2,44 @@
 
 ## Status
 
-Phase 1 implementation baseline. Backend-independent source code, Azure Blob/S3 backend profiles, Snowflake workload identity code and static CI are present. A real remote-state control plane and Snowflake identity bootstrap still need to be configured/applied against actual accounts.
+Phase 1 source/static-CI baseline. Azure Blob/S3 backend profiles, platform Terraform WIF, DEV project-CI WIF source and the manual DEV plan path exist. No real remote state or Snowflake identity has been applied yet.
 
 ## Control-plane principle
 
-Terraform state storage and Snowflake authentication are separate concerns:
+Terraform state, platform Terraform identity and project delivery identity are separate concerns:
 
 ```text
 GitHub Actions
 │
-├── GitHub OIDC -> selected Terraform state backend
-│                  ├── Azure Blob Storage (Microsoft-first reference)
-│                  └── Amazon S3 (AWS reference)
+├── OIDC -> selected Terraform state backend
+│          ├── Azure Blob Storage
+│          └── Amazon S3
 │
-└── GitHub OIDC -> Snowflake SERVICE user
-                   └── AR_TERRAFORM_<ENV>
-                       └── routine platform Terraform
+├── OIDC -> SU_GITHUB_TERRAFORM_<ENV>
+│          -> AR_TERRAFORM_<ENV>
+│          -> platform Terraform
+│
+└── OIDC -> SU_GITHUB_<DOMAIN>_CI
+           -> AR_<DOMAIN>_CI
+           -> PR workspace lifecycle
 ```
 
-Choosing Azure Blob or S3 for state does not change the Snowflake account/database/RBAC architecture.
+Changing the state backend does not change Snowflake RBAC/domain design.
 
-## Why OneDrive / SharePoint is different
+## OneDrive / SharePoint boundary
 
-OneDrive and SharePoint are appropriate for shared human-facing material such as:
+Use OneDrive/SharePoint for human-facing documents, runbooks, approvals, reports and audit evidence. Do not use a synchronised shared-drive file as authoritative live Terraform state.
 
-```text
-architecture documents
-runbooks
-change records
-audit evidence
-approved reports
-```
+## Backend selection
 
-They are not the authoritative backend for live Terraform state. Terraform requires a backend contract with concurrency protection, consistency and machine access semantics. Do not store the collaborative `terraform.tfstate` in a synchronised OneDrive/SharePoint folder.
-
-## Backend selection model
-
-Terraform does not allow a backend type to be selected through an input variable. Each root therefore remains backend-free in committed source, and the selected backend declaration is materialised only at execution time:
+Terraform backend type is selected at execution time because backend type cannot be parameterised through a normal Terraform input variable:
 
 ```text
 terraform/backend-profiles/azurerm/backend.tf
 terraform/backend-profiles/s3/backend.tf
-                │
-                └── terraform/scripts/select-backend.sh
-                            │
-                            └── <root>/backend.generated.tf
+          -> terraform/scripts/select-backend.sh
+          -> <root>/backend.generated.tf   # ignored
 ```
-
-`backend.generated.tf` is ignored by Git.
 
 Supported values:
 
@@ -58,21 +48,49 @@ TF_STATE_BACKEND=azurerm
 TF_STATE_BACKEND=s3
 ```
 
-An empty `TF_STATE_BACKEND` in the DEV plan workflow defaults to `azurerm` as the current Microsoft-first example.
+Azure Blob is the Microsoft-first reference. S3 remains a supported AWS reference.
+
+## State layout
+
+There are now eight lifecycle state objects:
+
+```text
+enterprise-snowflake-platform-infra/organization/terraform.tfstate
+enterprise-snowflake-platform-infra/identity/dev/terraform.tfstate
+enterprise-snowflake-platform-infra/identity/uat/terraform.tfstate
+enterprise-snowflake-platform-infra/identity/prod/terraform.tfstate
+enterprise-snowflake-platform-infra/platform/dev/terraform.tfstate
+enterprise-snowflake-platform-infra/project-identity/dev/terraform.tfstate
+enterprise-snowflake-platform-infra/platform/uat/terraform.tfstate
+enterprise-snowflake-platform-infra/platform/prod/terraform.tfstate
+```
+
+Why the extra DEV project-identity state:
+
+```text
+identity/dev
+  creates platform Terraform identity
+        ↓
+platform/dev
+  creates AR_<DOMAIN>_CI roles
+        ↓
+project-identity/dev
+  creates project CI service users bound to those existing roles
+```
+
+Combining these would either create a dependency cycle or let routine platform state own a delivery identity it should not control.
+
+A deployment chooses one authoritative backend. Do not keep Azure Blob and S3 simultaneously writable for the same state.
 
 ## Azure Blob profile
-
-The `azurerm` backend stores state as Azure Blob and uses Azure Blob native locking/consistency capabilities.
 
 Reference authentication:
 
 ```text
-GitHub OIDC
-   -> Microsoft Entra workload federation
-       -> Azure Blob container
+GitHub OIDC -> Microsoft Entra workload federation -> Azure Blob container
 ```
 
-Routine CI uses:
+Baseline variables:
 
 ```text
 ARM_USE_OIDC=true
@@ -83,89 +101,19 @@ TF_STATE_STORAGE_ACCOUNT
 TF_STATE_CONTAINER
 ```
 
-The baseline data-plane permission is `Storage Blob Data Contributor` scoped to the Terraform state container. Avoid client secrets for new CI workloads.
+Baseline data-plane access is `Storage Blob Data Contributor` scoped to the state container. Avoid client secrets for new automation.
 
 ## Amazon S3 profile
 
-The `s3` backend remains supported for AWS-centred organisations:
-
 ```text
-GitHub OIDC
-   -> AWS IAM role
-       -> S3 state object + .tflock
+GitHub OIDC -> AWS IAM role -> S3 state + .tflock
 ```
 
-Requirements:
+Require bucket versioning, encryption, public-access blocking, prefix-scoped IAM and Terraform native `use_lockfile = true`. Do not introduce deprecated DynamoDB locking for new deployments.
 
-- bucket versioning enabled;
-- server-side encryption enabled;
-- public access blocked;
-- IAM limited to required state/lock prefixes;
-- Terraform `use_lockfile = true`;
-- no new DynamoDB locking dependency.
+## Platform Terraform identity
 
-## State layout
-
-The selected backend stores seven independent lifecycle states:
-
-```text
-enterprise-snowflake-platform-infra/organization/terraform.tfstate
-enterprise-snowflake-platform-infra/identity/dev/terraform.tfstate
-enterprise-snowflake-platform-infra/identity/uat/terraform.tfstate
-enterprise-snowflake-platform-infra/identity/prod/terraform.tfstate
-enterprise-snowflake-platform-infra/platform/dev/terraform.tfstate
-enterprise-snowflake-platform-infra/platform/uat/terraform.tfstate
-enterprise-snowflake-platform-infra/platform/prod/terraform.tfstate
-```
-
-A deployment chooses one authoritative backend for these states. Do not keep simultaneously writable S3 and Azure copies of the same state.
-
-## GitHub Environments
-
-Create GitHub Environments named:
-
-```text
-dev
-uat
-prod
-```
-
-Common Snowflake variables:
-
-```text
-SNOWFLAKE_ORGANIZATION_NAME
-SNOWFLAKE_ACCOUNT_NAME
-SNOWFLAKE_OIDC_AUDIENCE
-```
-
-Backend selector:
-
-```text
-TF_STATE_BACKEND=azurerm|s3
-```
-
-For Azure Blob:
-
-```text
-AZURE_TENANT_ID
-AZURE_CLIENT_ID
-TF_STATE_STORAGE_ACCOUNT
-TF_STATE_CONTAINER
-```
-
-For S3:
-
-```text
-TF_STATE_BUCKET
-TF_STATE_REGION
-AWS_TERRAFORM_STATE_ROLE_ARN
-```
-
-`SNOWFLAKE_OIDC_AUDIENCE` remains independent of the state backend and must be scoped to the target Snowflake account.
-
-## Snowflake identity bootstrap
-
-Identity roots:
+Roots:
 
 ```text
 terraform/stacks/identity/dev/
@@ -173,20 +121,15 @@ terraform/stacks/identity/uat/
 terraform/stacks/identity/prod/
 ```
 
-Each creates:
+Create:
 
 ```text
-SU_GITHUB_TERRAFORM_<ENV>
-AR_TERRAFORM_<ENV>
+SU_GITHUB_TERRAFORM_DEV  -> AR_TERRAFORM_DEV
+SU_GITHUB_TERRAFORM_UAT  -> AR_TERRAFORM_UAT
+SU_GITHUB_TERRAFORM_PROD -> AR_TERRAFORM_PROD
 ```
 
-with GitHub OIDC trust and an account-scoped audience.
-
-Initial identity bootstrap cannot authenticate using the identity it is about to create. Run it through a controlled administrator session against the target account with `ACCOUNTADMIN` activated only for the bootstrap operation.
-
-## Routine Snowflake privileges
-
-`AR_TERRAFORM_<ENV>` currently receives:
+Routine privileges:
 
 ```text
 CREATE DATABASE
@@ -195,51 +138,125 @@ CREATE WAREHOUSE
 MANAGE GRANTS
 ```
 
-Routine execution does not activate ACCOUNTADMIN, SYSADMIN or SECURITYADMIN.
+Routine Terraform does not activate ACCOUNTADMIN, SYSADMIN or SECURITYADMIN. Identity bootstrap may use ACCOUNTADMIN only to establish machine identity/WIF.
 
-## GitHub OIDC subjects
-
-```text
-DEV  repo:ruizengalways/enterprise-snowflake-platform-infra:environment:dev
-UAT  repo:ruizengalways/enterprise-snowflake-platform-infra:environment:uat
-PROD repo:ruizengalways/enterprise-snowflake-platform-infra:environment:prod
-```
-
-## DEV plan workflow
-
-`.github/workflows/terraform-plan-dev.yml` is manual-only.
-
-It:
-
-1. enters GitHub Environment `dev`;
-2. resolves `TF_STATE_BACKEND` (default `azurerm`);
-3. materialises the selected backend profile;
-4. obtains/uses GitHub OIDC for Azure Blob or AWS S3 as applicable;
-5. separately requests a GitHub OIDC token for Snowflake WIF;
-6. initialises the DEV remote state key;
-7. validates;
-8. runs `terraform plan` only.
-
-It intentionally does not apply and does not upload a reusable binary plan artifact.
-
-## Promotion of infrastructure automation
+Platform OIDC subjects:
 
 ```text
-DEV identity + plan + apply + verification
-       ↓
-UAT identity + plan + apply + verification
-       ↓
-PROD identity + protected plan/apply
+repo:ruizengalways/enterprise-snowflake-platform-infra:environment:dev
+repo:ruizengalways/enterprise-snowflake-platform-infra:environment:uat
+repo:ruizengalways/enterprise-snowflake-platform-infra:environment:prod
 ```
 
-GitHub Environment approval rules remain part of the deployment control plane, especially for PROD.
+## DEV project-CI identities
+
+Root:
+
+```text
+terraform/stacks/project-identity/dev/
+```
+
+Generic module:
+
+```text
+terraform/modules/service-identity/
+```
+
+Current identities:
+
+```text
+SU_GITHUB_HEALTH_CI
+  -> AR_HEALTH_CI
+  -> subject repo:ruizengalways/enterprise-snowflake-health-analytics:environment:ci
+
+SU_GITHUB_TRANSPORT_CI
+  -> AR_TRANSPORT_CI
+  -> subject repo:ruizengalways/enterprise-snowflake-transport-analytics:environment:ci
+```
+
+The module creates only the SERVICE user/WIF trust and grants an existing role. It does not create account-level privileges.
+
+`project-identity/dev` must execute after `platform/dev` because the CI roles are owned by the platform state.
+
+See ADR-027.
+
+## Account-scoped OIDC audience
+
+Platform and project identities require a non-empty account-scoped Snowflake OIDC audience. The shared `snowflakecomputing.com` audience is rejected by the Terraform modules.
+
+The Snowflake first-party GitHub action currently configures `snowflakecomputing.com` automatically when `use-oidc: true`; therefore the reusable project PR workflow installs the action/CLI with `use-oidc: false`, explicitly requests a GitHub token with the configured account-scoped audience, and exports that short-lived token to Snowflake CLI.
+
+This preserves the account-scoped audience security boundary without storing a password/private key.
+
+## GitHub Environments
+
+Platform Infra repository:
+
+```text
+dev
+uat
+prod
+```
+
+Health and Transport project repositories:
+
+```text
+ci
+```
+
+Project `ci` environment must eventually define:
+
+```text
+SNOWFLAKE_ACCOUNT
+SNOWFLAKE_OIDC_AUDIENCE
+```
+
+The Snowflake service user, role, warehouse and database are convention-derived from the domain code by the reusable workflow.
+
+## DEV platform plan
+
+`.github/workflows/terraform-plan-dev.yml` remains manual-only, backend-selectable and plan-only.
+
+## PR workspace workflow
+
+Framework:
+
+```text
+enterprise-snowflake-data-project-framework/.github/workflows/pr-workspace.yml
+```
+
+Thin project callers are pinned to a framework commit. The reusable workflow:
+
+1. targets GitHub Environment `ci`;
+2. validates the domain/action inputs;
+3. renders framework-owned QUERY_TAG/workspace SQL;
+4. installs a pinned Snowflake Action + Snowflake CLI;
+5. requests a custom-audience GitHub OIDC token;
+6. connects as `SU_GITHUB_<DOMAIN>_CI` with `AR_<DOMAIN>_CI`;
+7. executes only the generated local workspace SQL;
+8. creates on PR open/reopen/synchronize and drops on PR close.
+
+It does not yet execute untrusted project PR business code under Snowflake credentials.
+
+## Real execution order
+
+```text
+remote state control plane
+-> organization bootstrap/import
+-> identity/dev
+-> platform/dev plan/apply/verify
+-> project-identity/dev
+-> configure Health/Transport GitHub Environment ci
+-> real PR workspace create/drop test
+-> UAT
+-> PROD
+```
 
 ## References
 
-- ADR-022 — historical S3-only state choice; superseded.
-- ADR-023 — GitHub OIDC workload identity for routine Terraform.
-- ADR-024 — cloud-agnostic Azure Blob/S3 backend profiles.
+- ADR-023 — platform Terraform GitHub OIDC identity.
+- ADR-024 — Azure Blob/S3 backend adapters.
+- ADR-025 — DEV personal and PR CI workspace lifecycle.
+- ADR-027 — project PR-CI OIDC identity lifecycle.
+- `docs/CURRENT_CONTEXT.md`
 - `docs/runbooks/terraform-platform-bootstrap.md`
-- `docs/architecture/ACCOUNT_TOPOLOGY.md`
-- `docs/architecture/RBAC_MODEL.md`
-- `docs/standards/TERRAFORM_STANDARDS.md`
