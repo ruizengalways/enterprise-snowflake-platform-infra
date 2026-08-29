@@ -13,9 +13,15 @@ projects:
   health:
     code: HEALTH
     repository: enterprise-snowflake-health-analytics
+    warehouse_keys:
+      query: health_query
+      transform: health_transform
   transport:
     code: TRANSPORT
     repository: enterprise-snowflake-transport-analytics
+    warehouse_keys:
+      query: transport_query
+      transform: transport_transform
 
 analytics_databases:
   health_uat:
