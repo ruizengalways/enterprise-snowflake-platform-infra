@@ -72,6 +72,9 @@ module "rbac" {
   }
 
   # UAT is production-like: human developers can query but do not receive WRITE.
+  # Routine transform compute is machine-only through AR_<DOMAIN>_DEPLOY. Human
+  # emergency access must be granted JIT through enterprise identity governance;
+  # it is intentionally absent from the base Terraform warehouse grants.
   grant_developer_write = false
 
   warehouse_grants = merge(
@@ -84,14 +87,6 @@ module "rbac" {
     {
       for project in values(local.config.projects) :
       "AR_${project.code}_DEPLOY" => toset([
-        module.warehouse[project.warehouse_keys.transform].fully_qualified_name,
-      ])
-    },
-    {
-      # Temporary manual/break-glass transform access. Routine project delivery
-      # is owned by AR_<DOMAIN>_DEPLOY once its WIF service identity is bootstrapped.
-      for project in values(local.config.projects) :
-      "AR_${project.code}_ADMIN" => toset([
         module.warehouse[project.warehouse_keys.transform].fully_qualified_name,
       ])
     },
