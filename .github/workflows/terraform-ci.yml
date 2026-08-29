@@ -55,6 +55,7 @@ jobs:
           - identity/uat
           - identity/prod
           - dev
+          - project-identity/dev
           - uat
           - prod
 
