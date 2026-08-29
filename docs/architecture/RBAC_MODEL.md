@@ -160,7 +160,7 @@ SU_GITHUB_<DOMAIN>_DEPLOY
 
 `AR_<DOMAIN>_DEPLOY` is intentionally outside the human role hierarchy. The deployment role owns long-lived Snowflake-native runtime objects created by project delivery so Tasks and Dynamic Tables do not depend on a human role retaining background-runtime privileges.
 
-Deployment identities use GitHub OIDC / Snowflake Workload Identity Federation; no password or private key is committed. GitHub deployment workflows are pinned by immutable framework SHA and deploy an explicit full project Git SHA.
+Deployment identities use GitHub OIDC / Snowflake Workload Identity Federation; no password or private key is committed. Standard project deployment uses a full framework SHA and an explicit full project Git SHA that must belong to reviewed `main` history.
 
 ## Warehouse isolation
 
@@ -273,4 +273,4 @@ PROD
 
 Static Terraform CI validates provider/resource schemas but not live authorization. The first DEV plan/apply must prove these grants and role relationships in a real Snowflake account before UAT/PROD rollout. Live verification must also prove the deployment service identity can create/own warehouse-backed Streams, Tasks and Dynamic Tables without a human ADMIN transform grant.
 
-See ADR-020, ADR-023, ADR-025 and `TERRAFORM_STATE_AND_IDENTITY.md`.
+See ADR-020, ADR-023, ADR-025, ADR-027, ADR-034 and `TERRAFORM_STATE_AND_IDENTITY.md`.
