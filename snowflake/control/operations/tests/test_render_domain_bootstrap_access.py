@@ -60,6 +60,20 @@ class RenderDomainBootstrapAccessTests(unittest.TestCase):
         self.assertIn("RAISE E_INVALID_STATE", sql)
         self.assertIn("RAISE E_DETAILS_CONFLICT", sql)
 
+    def test_validation_requires_explicit_pass_and_audit_details(self) -> None:
+        sql = MODULE.render(self.config)
+        start = sql.index(
+            "CREATE OR REPLACE PROCEDURE PLATFORM_CONTROL.OPERATIONS.HEALTH_PIPELINE_BOOTSTRAP_MARK_VALIDATED"
+        )
+        end = sql.index("$$;", start)
+        procedure = sql[start:end]
+        self.assertIn("P_RECONCILIATION_PASSED BOOLEAN", procedure)
+        self.assertIn("P_RECONCILIATION_DETAILS VARIANT", procedure)
+        self.assertIn("P_RECONCILIATION_PASSED IS NULL OR NOT P_RECONCILIATION_PASSED", procedure)
+        self.assertIn("RAISE E_RECONCILIATION_FAILED", procedure)
+        self.assertIn("RAISE E_DETAILS_REQUIRED", procedure)
+        self.assertIn("RECONCILIATION_PASSED = :P_RECONCILIATION_PASSED", procedure)
+
     def test_initial_bootstrap_rejects_existing_steady_state_checkpoint(self) -> None:
         sql = MODULE.render(self.config)
         start = sql.index(
@@ -86,6 +100,7 @@ class RenderDomainBootstrapAccessTests(unittest.TestCase):
         self.assertIn("COMMIT;", procedure)
         self.assertIn("WHEN OTHER THEN", procedure)
         self.assertIn("ROLLBACK;", procedure)
+        self.assertLess(procedure.index("RAISE E_INVALID_STATE"), procedure.index("BEGIN TRANSACTION;"))
         self.assertLess(
             procedure.index("NOT EQUAL_NULL(CHECKPOINT_VALUE, :V_HANDOFF_POSITION)"),
             procedure.index("MERGE INTO PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT"),
@@ -94,11 +109,16 @@ class RenderDomainBootstrapAccessTests(unittest.TestCase):
             procedure.index("MERGE INTO PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT"),
             procedure.index("SET STATUS = 'HANDOFF_COMMITTED'"),
         )
+        self.assertGreater(procedure.index("ROLLBACK;"), procedure.index("BEGIN TRANSACTION;"))
 
     def test_grants_expose_only_generated_domain_surface(self) -> None:
         sql = MODULE.render(self.config)
         self.assertIn(
             "GRANT SELECT ON VIEW PLATFORM_CONTROL.OPERATIONS.HEALTH_PIPELINE_BOOTSTRAP TO ROLE AR_HEALTH_DEPLOY;",
+            sql,
+        )
+        self.assertIn(
+            "GRANT USAGE ON PROCEDURE PLATFORM_CONTROL.OPERATIONS.TRANSPORT_PIPELINE_BOOTSTRAP_MARK_VALIDATED(VARCHAR, VARCHAR, BOOLEAN, VARIANT)",
             sql,
         )
         self.assertIn(
