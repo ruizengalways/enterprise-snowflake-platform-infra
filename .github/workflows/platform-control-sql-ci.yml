@@ -51,8 +51,12 @@ jobs:
           for env in dev uat prod; do
             python snowflake/control/operations/render_domain_access.py \
               --config "config/environments/${env}.yml" \
-              --output "${RUNNER_TEMP}/platform-control/${env}.sql"
-            test -s "${RUNNER_TEMP}/platform-control/${env}.sql"
+              --output "${RUNNER_TEMP}/platform-control/${env}-operational.sql"
+            python snowflake/control/operations/render_domain_bootstrap_access.py \
+              --config "config/environments/${env}.yml" \
+              --output "${RUNNER_TEMP}/platform-control/${env}-bootstrap.sql"
+            test -s "${RUNNER_TEMP}/platform-control/${env}-operational.sql"
+            test -s "${RUNNER_TEMP}/platform-control/${env}-bootstrap.sql"
           done
 
       - name: Assert no shared-table project DML grants are rendered
@@ -74,3 +78,16 @@ jobs:
             echo "Rendered project write API exposes a caller-controlled project/environment parameter." >&2
             exit 1
           fi
+
+      - name: Assert bootstrap checkpoint commit remains atomic
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in "${RUNNER_TEMP}"/platform-control/*-bootstrap.sql; do
+            grep -q 'PIPELINE_BOOTSTRAP_COMMIT_HANDOFF' "$file"
+            grep -q 'BEGIN TRANSACTION;' "$file"
+            grep -q 'MERGE INTO PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT' "$file"
+            grep -q "SET STATUS = 'HANDOFF_COMMITTED'" "$file"
+            grep -q 'WHEN OTHER THEN' "$file"
+            grep -q 'ROLLBACK;' "$file"
+          done
