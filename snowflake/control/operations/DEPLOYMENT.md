@@ -12,15 +12,19 @@ The operational SQL lifecycle is deliberately separate from Terraform state beca
 
 Project deployment roles must not receive direct DML on the shared operational base tables.
 
-Before deployment, render the selected environment's project access surface from the authoritative environment metadata:
+Two generators intentionally keep the normal runtime surface and one-time bootstrap handoff surface separate:
 
 ```bash
 python snowflake/control/operations/render_domain_access.py \
   --config config/environments/dev.yml \
   --output /tmp/platform-control-domain-access-dev.sql
+
+python snowflake/control/operations/render_domain_bootstrap_access.py \
+  --config config/environments/dev.yml \
+  --output /tmp/platform-control-bootstrap-access-dev.sql
 ```
 
-The renderer creates, for every configured project code:
+The normal operational renderer creates, for every configured project code:
 
 ```text
 <DOMAIN>_PIPELINE_CHECKPOINT
@@ -33,7 +37,20 @@ The renderer creates, for every configured project code:
 <DOMAIN>_RECORD_PIPELINE_CHECK_RESULT(...)
 ```
 
-It also grants the corresponding `AR_<DOMAIN>_DEPLOY` role only the database/schema usage plus access to its own generated views/procedures. Project and environment are fixed server-side for writes; callers do not submit them.
+The bootstrap renderer creates:
+
+```text
+<DOMAIN>_PIPELINE_BOOTSTRAP
+
+<DOMAIN>_PIPELINE_BOOTSTRAP_START(...)
+<DOMAIN>_PIPELINE_BOOTSTRAP_MARK_SNAPSHOT_LANDED(...)
+<DOMAIN>_PIPELINE_BOOTSTRAP_MARK_VALIDATED(...)
+<DOMAIN>_PIPELINE_BOOTSTRAP_COMMIT_HANDOFF(...)
+```
+
+Both generators grant `AR_<DOMAIN>_DEPLOY` only database/schema usage plus access to that domain's generated views/procedures. Project and environment are fixed server-side for writes; callers do not submit them.
+
+The bootstrap control-plane design and acceptance criteria are documented separately in `docs/architecture/BOOTSTRAP_HANDOFF_CONTROL.md`.
 
 ## DEV deployment order
 
@@ -42,12 +59,16 @@ The DEV deployment path must execute these steps in this explicit order on one S
 1. `pipeline_checkpoint.sql`
 2. `pipeline_run.sql`
 3. `pipeline_check_result.sql`
-4. `advance_pipeline_checkpoint.sql`
-5. the generated DEV domain-access SQL from `render_domain_access.py`
+4. `pipeline_bootstrap.sql`
+5. `advance_pipeline_checkpoint.sql`
+6. generated DEV normal operational access from `render_domain_access.py`
+7. generated DEV bootstrap access from `render_domain_bootstrap_access.py`
+
+`PIPELINE_BOOTSTRAP_COMMIT_HANDOFF` depends on `PIPELINE_CHECKPOINT`, so the checkpoint base table must exist before bootstrap procedures are created.
 
 The table DDL is idempotent for initial creation. Procedure/view deployment uses the repository definition plus environment metadata as the authoritative source.
 
-DDL is not treated as one rollback-able transaction. Snowflake DDL has its own transaction semantics, so deployment is ordered and fail-fast instead of pretending a multi-file DDL release can be atomically rolled back.
+DDL is not treated as one rollback-able transaction. Snowflake DDL has its own transaction semantics, so deployment is ordered and fail-fast instead of pretending a multi-file DDL release can be atomically rolled back. The runtime handoff procedure itself uses an explicit transaction for the checkpoint + bootstrap-state commit.
 
 ## Authentication
 
@@ -81,13 +102,13 @@ There is intentionally no automatic deploy on push while the reference environme
 
 ## Verification
 
-Static CI renders DEV/UAT/PROD domain access and asserts that project/environment are server-fixed and that the generated contract does not grant project roles direct shared-table access.
+Static CI renders DEV/UAT/PROD normal and bootstrap domain access. It asserts that project/environment are server-fixed, no project role receives direct shared-table DML, and the bootstrap handoff commit contains one transaction covering checkpoint advancement and `HANDOFF_COMMITTED` state.
 
-The protected deployment workflow must verify the authenticated user/role/account before deployment and query `INFORMATION_SCHEMA` / grants after deployment. For every configured project it must verify three domain views and four domain procedures.
+The protected deployment workflow must verify the authenticated user/role/account before deployment and query `INFORMATION_SCHEMA` / grants after deployment. For every configured project it must verify the normal operational views/procedures plus one bootstrap view and four bootstrap procedures.
 
-Live DEV must additionally prove both directions of cross-domain denial (for example, Health cannot access Transport surfaces and Transport cannot access Health surfaces) before the authorization boundary is considered production-proven.
+Live DEV must additionally prove both directions of cross-domain denial, fail-closed bootstrap state transitions, idempotent retry behavior, and atomic handoff commit before the authorization/runtime boundary is considered production-proven.
 
-The current implementation branch has source/static rendering and tests. The existing protected DEV workflow still needs the generated SQL execution/verification step wired into it; do not describe the domain access surface as deployed until that change and live verification succeed.
+The current implementation branch has source/static rendering and tests. The existing protected DEV workflow still needs both generated SQL execution/verification steps wired into it; do not describe these surfaces as deployed until that change and live verification succeed.
 
 ## Promotion
 
