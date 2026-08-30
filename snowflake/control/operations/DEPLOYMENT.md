@@ -10,15 +10,31 @@ The operational SQL lifecycle is deliberately separate from Terraform state beca
 
 ## Preferred deployment entrypoint
 
-Protected deployment workflows should consume one ordered generated bundle rather than reimplement SQL ordering in workflow YAML:
+Protected deployment workflows should consume generated artifacts rather than reimplement object lists or SQL ordering in workflow YAML:
 
 ```bash
 python snowflake/control/operations/render_deployment_bundle.py \
   --config config/environments/dev.yml \
   --output /tmp/platform-control-dev.sql
+
+python snowflake/control/operations/render_verification_sql.py \
+  --config config/environments/dev.yml \
+  --output /tmp/platform-control-dev-verify.sql
 ```
 
-`render_deployment_bundle.py` is packaging only. It does not authenticate to Snowflake and contains no credentials. It assembles repository-owned base SQL and environment-generated domain surfaces in dependency order.
+The intended protected workflow is therefore small:
+
+```text
+authenticate and verify account/role
+  -> render deployment bundle
+  -> execute deployment bundle
+  -> render post-deploy verification SQL
+  -> execute verification SQL
+```
+
+Both renderers are packaging/verification generators only. They do not authenticate to Snowflake and contain no credentials.
+
+`render_deployment_bundle.py` assembles repository-owned base SQL and environment-generated domain surfaces in dependency order. `render_verification_sql.py` derives expected domain objects and grants from the same environment metadata so workflow YAML does not duplicate HEALTH/TRANSPORT object names.
 
 The lower-level renderers remain separate and are useful for focused tests and debugging:
 
@@ -110,20 +126,30 @@ Do not run the operational SQL deployment before:
 2. `platform/dev` is applied and `PLATFORM_CONTROL.OPERATIONS` exists;
 3. `project-identity/dev` has created the configured `AR_<DOMAIN>_DEPLOY` roles before generated grants are applied;
 4. the `dev` GitHub Environment contains the Snowflake organization/account/audience variables already required by Terraform plan;
-5. the platform role has the expected ownership/DDL/grant rights on `PLATFORM_CONTROL.OPERATIONS`.
+5. the platform role has the expected ownership/DDL/grant rights on `PLATFORM_CONTROL.OPERATIONS` and can observe the deployed objects/grants through `PLATFORM_CONTROL.INFORMATION_SCHEMA`.
 
 There is intentionally no automatic deploy on push while the reference environment has not completed live bootstrap.
 
-## Verification
+## Post-deploy verification
 
-Static CI renders DEV/UAT/PROD lower-level surfaces **and** complete ordered deployment bundles. It checks bundle dependency markers, project/environment server-fixing, absence of project direct shared-table DML grants, explicit bootstrap reconciliation gating, checkpoint-regression guards, and the handoff transaction shape.
+The generated verification SQL uses immediate `PLATFORM_CONTROL.INFORMATION_SCHEMA` metadata rather than delayed usage-history views. It fails closed when:
 
-The protected deployment workflow must verify the authenticated user/role/account before executing the generated bundle, then query `INFORMATION_SCHEMA` / grants afterward. For every configured project it must verify the normal operational views/procedures plus one bootstrap view and four bootstrap procedures.
+- any expected domain operational/bootstrap view is missing;
+- any expected domain procedure is missing;
+- `AR_<DOMAIN>_DEPLOY` is missing SELECT on one of its domain views;
+- `AR_<DOMAIN>_DEPLOY` is missing USAGE on one of its domain procedures;
+- a project deployment role has direct SELECT/INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES on a shared `PIPELINE_*` base table.
+
+Snowflake's Information Schema exposes views, procedures, and object privileges to the active role when it can see those objects. The platform deployment role therefore remains the verification executor; project roles are not elevated merely to perform verification.
+
+## Static verification
+
+Static CI renders DEV/UAT/PROD lower-level surfaces, complete ordered deployment bundles, and post-deploy verification SQL. It checks bundle dependency markers, generated verification coverage, project/environment server-fixing, absence of project direct shared-table DML grants, explicit bootstrap reconciliation gating, checkpoint-regression guards, and the handoff transaction shape.
 
 Live DEV must additionally prove both directions of cross-domain denial, fail-closed bootstrap transitions, reconciliation failure rejection, checkpoint-regression rejection, idempotent retry behavior, and atomic handoff commit before the authorization/runtime boundary is considered production-proven.
 
-The current implementation branch has source/static bundle rendering and tests. The existing protected DEV workflow still needs the bundle execution and post-deployment verification wired into it; do not describe these surfaces as deployed until that change and live verification succeed.
+The current implementation branch has source/static bundle and verification rendering with tests. The existing protected DEV workflow still needs bundle execution plus generated verification execution wired into it; do not describe these surfaces as deployed until that change and live verification succeed.
 
 ## Promotion
 
-After DEV is live-proven, UAT and PROD should receive equivalent protected workflows that execute the same immutable Git SHA and render a bundle from their own environment metadata. Do not maintain environment-specific SQL branches or copied per-domain SQL files.
+After DEV is live-proven, UAT and PROD should receive equivalent protected workflows that execute the same immutable Git SHA and render deployment/verification artifacts from their own environment metadata. Do not maintain environment-specific SQL branches or copied per-domain SQL files.
