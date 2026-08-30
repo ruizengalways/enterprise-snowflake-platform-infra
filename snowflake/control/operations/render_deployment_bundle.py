@@ -4,9 +4,14 @@
 from __future__ import annotations
 
 import argparse
+import sys
 from pathlib import Path
 
 import yaml
+
+OPERATIONS_DIR = Path(__file__).resolve().parent
+if str(OPERATIONS_DIR) not in sys.path:
+    sys.path.insert(0, str(OPERATIONS_DIR))
 
 from render_domain_access import render as render_domain_access
 from render_domain_bootstrap_access import render as render_domain_bootstrap_access
@@ -21,7 +26,7 @@ BASE_SQL_FILES = (
 )
 
 
-def render_bundle(config: dict, operations_dir: Path) -> str:
+def render_bundle(config: dict, operations_dir: Path = OPERATIONS_DIR) -> str:
     sections: list[str] = [
         "-- GENERATED DEPLOYMENT BUNDLE: PLATFORM_CONTROL.OPERATIONS\n"
         "-- Base objects are repository SQL; domain surfaces are rendered from environment metadata.\n"
@@ -54,8 +59,7 @@ def main() -> None:
     args = parser.parse_args()
 
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-    operations_dir = Path(__file__).resolve().parent
-    bundle = render_bundle(config, operations_dir)
+    bundle = render_bundle(config)
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(bundle, encoding="utf-8")
 
