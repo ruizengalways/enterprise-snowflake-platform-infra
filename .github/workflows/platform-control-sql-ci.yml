@@ -59,6 +59,23 @@ jobs:
             test -s "${RUNNER_TEMP}/platform-control/${env}-bootstrap.sql"
           done
 
+      - name: Render ordered deployment bundles
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/platform-control-bundles"
+          for env in dev uat prod; do
+            python snowflake/control/operations/render_deployment_bundle.py \
+              --config "config/environments/${env}.yml" \
+              --output "${RUNNER_TEMP}/platform-control-bundles/${env}.sql"
+            BUNDLE="${RUNNER_TEMP}/platform-control-bundles/${env}.sql"
+            test -s "$BUNDLE"
+            grep -q -- '-- BEGIN BASE: pipeline_checkpoint.sql' "$BUNDLE"
+            grep -q -- '-- BEGIN BASE: pipeline_bootstrap.sql' "$BUNDLE"
+            grep -q -- '-- BEGIN GENERATED: normal domain operational access' "$BUNDLE"
+            grep -q -- '-- BEGIN GENERATED: bootstrap handoff access' "$BUNDLE"
+          done
+
       - name: Assert no shared-table project DML grants are rendered
         shell: bash
         run: |
@@ -85,6 +102,10 @@ jobs:
           set -euo pipefail
           for file in "${RUNNER_TEMP}"/platform-control/*-bootstrap.sql; do
             grep -q 'PIPELINE_BOOTSTRAP_COMMIT_HANDOFF' "$file"
+            grep -q 'P_RECONCILIATION_PASSED BOOLEAN' "$file"
+            grep -q 'RAISE E_RECONCILIATION_FAILED' "$file"
+            grep -q 'RAISE E_CHECKPOINT_EXISTS' "$file"
+            grep -q 'RAISE E_CHECKPOINT_CONFLICT' "$file"
             grep -q 'BEGIN TRANSACTION;' "$file"
             grep -q 'MERGE INTO PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT' "$file"
             grep -q "SET STATUS = 'HANDOFF_COMMITTED'" "$file"
