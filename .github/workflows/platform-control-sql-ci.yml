@@ -76,6 +76,23 @@ jobs:
             grep -q -- '-- BEGIN GENERATED: bootstrap handoff access' "$BUNDLE"
           done
 
+      - name: Render post-deploy verification SQL
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "${RUNNER_TEMP}/platform-control-verification"
+          for env in dev uat prod; do
+            python snowflake/control/operations/render_verification_sql.py \
+              --config "config/environments/${env}.yml" \
+              --output "${RUNNER_TEMP}/platform-control-verification/${env}.sql"
+            VERIFY="${RUNNER_TEMP}/platform-control-verification/${env}.sql"
+            test -s "$VERIFY"
+            grep -q 'PLATFORM_CONTROL.INFORMATION_SCHEMA.VIEWS' "$VERIFY"
+            grep -q 'PLATFORM_CONTROL.INFORMATION_SCHEMA.PROCEDURES' "$VERIFY"
+            grep -q 'PLATFORM_CONTROL.INFORMATION_SCHEMA.OBJECT_PRIVILEGES' "$VERIFY"
+            grep -q 'E_FORBIDDEN_GRANT' "$VERIFY"
+          done
+
       - name: Assert no shared-table project DML grants are rendered
         shell: bash
         run: |
