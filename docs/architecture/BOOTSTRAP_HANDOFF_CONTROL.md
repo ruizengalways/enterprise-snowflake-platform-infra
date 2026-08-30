@@ -39,7 +39,17 @@ BOUNDARY_CAPTURED
 
 Each transition is performed through an owner-rights procedure whose project and environment are fixed in generated SQL.
 
-A repeated call with the same already-recorded state is treated as an idempotent retry where safe. A caller cannot skip a state or mutate a committed handoff boundary.
+A repeated call with already-recorded state is treated as an idempotent retry where the persisted lifecycle proves the operation already completed. Conflicting boundary metadata, snapshot identity, or reconciliation evidence fails closed. A caller cannot skip a state or mutate a committed handoff boundary.
+
+`SNAPSHOT_VALIDATED` requires two distinct inputs: an explicit `reconciliation_passed = TRUE` outcome and non-null reconciliation details. Structured details are audit evidence, not the authorization signal. Passing JSON that merely says `status=PASS` is not sufficient, and `FALSE`/`NULL` is rejected by the platform procedure.
+
+## Initial-bootstrap checkpoint guards
+
+This state machine is only for a dataset's initial handoff into steady-state capture.
+
+`PIPELINE_BOOTSTRAP_START` rejects a dataset/checkpoint kind that already has a `PIPELINE_CHECKPOINT`. Re-seeding or resetting an already-running dataset must use a separate future recovery/reseed workflow rather than silently reusing initial bootstrap.
+
+At final commit the procedure checks again. If an existing checkpoint differs from the captured handoff position, the handoff fails instead of overwriting it. This prevents a delayed bootstrap from rewinding already-progressed steady-state capture.
 
 ## Atomic handoff invariant
 
@@ -47,13 +57,16 @@ The final procedure is the authorization and transaction boundary:
 
 ```text
 SNAPSHOT_VALIDATED
-  -> BEGIN TRANSACTION
+  -> validate any existing checkpoint is absent or equals handoff position
+  -> transaction-scoped block
+       BEGIN TRANSACTION
        MERGE steady-state PIPELINE_CHECKPOINT = captured handoff position
        UPDATE bootstrap STATUS = HANDOFF_COMMITTED
-     COMMIT
+       COMMIT
+       on transaction-block error: ROLLBACK + re-raise
 ```
 
-If either write fails, the procedure rolls the transaction back and re-raises the error.
+Precondition failures occur outside the transaction-scoped exception handler. The explicit rollback handler covers only statements after `BEGIN TRANSACTION`, so state-validation errors are not obscured by an unrelated rollback attempt.
 
 This prevents the dangerous partial state where the incremental checkpoint has advanced but the initial snapshot has not actually passed reconciliation.
 
@@ -75,7 +88,7 @@ The generated view filters both `PROJECT_CODE` and `ENVIRONMENT`. Procedures emb
 
 ## Single-writer assumption
 
-The current baseline keeps the same operational assumption as checkpoint advancement: one logical bootstrap writer per domain/dataset bootstrap lifecycle. Static CI proves fail-closed state transitions and atomic SQL shape; live DEV must still test concurrent retry behavior before production approval.
+The current baseline keeps the same operational assumption as checkpoint advancement: one logical bootstrap writer per domain/dataset bootstrap lifecycle. Snowflake standard-table primary-key constraints are not being treated as a substitute for that runtime assumption. Static CI proves fail-closed state transitions and atomic SQL shape; live DEV must still test concurrent retry behavior before production approval.
 
 ## Live DEV acceptance criteria
 
@@ -83,13 +96,15 @@ A real source bootstrap is not considered proven until DEV demonstrates all of t
 
 1. capture a real source handoff boundary;
 2. land a snapshot consistent with that boundary using the source's supported mechanism;
-3. reconcile the landed snapshot;
+3. produce explicit reconciliation evidence and prove `FALSE` cannot advance validation;
 4. reject handoff commit before validation;
-5. atomically commit checkpoint plus `HANDOFF_COMMITTED` after validation;
-6. resume steady-state capture with the declared exclusive/inclusive boundary semantics;
-7. retry every lifecycle step without uncontrolled double-apply;
-8. prove HEALTH cannot read/invoke TRANSPORT bootstrap surfaces and vice versa;
-9. prove project roles have no direct DML on `PIPELINE_BOOTSTRAP` or `PIPELINE_CHECKPOINT`.
+5. reject initial bootstrap when a steady-state checkpoint already exists;
+6. reject a final handoff that conflicts with a different checkpoint value;
+7. atomically commit checkpoint plus `HANDOFF_COMMITTED` after validation;
+8. resume steady-state capture with the declared exclusive/inclusive boundary semantics;
+9. retry every lifecycle step without uncontrolled double-apply;
+10. prove HEALTH cannot read/invoke TRANSPORT bootstrap surfaces and vice versa;
+11. prove project roles have no direct DML on `PIPELINE_BOOTSTRAP` or `PIPELINE_CHECKPOINT`.
 
 ## Deliberate non-goals
 
