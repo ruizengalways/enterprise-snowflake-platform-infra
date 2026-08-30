@@ -105,12 +105,12 @@ Platform-infra PR #1:
 
 ```text
 feature/domain-scoped-operational-control
-code head 3a074ab48bd8edf82fabc01902cbf04d06b2c7fd
-Platform Control SQL CI: green
-current branch head adds human documentation only after that verified code commit
+verified code head 3f892aef9e29b8f6b7cc72a19a7efb8849c9246e
+Platform Control SQL CI run 33290717061: SUCCESS
+later branch commits update human deployment/context documentation only
 ```
 
-It now contains two separate generated surfaces rather than one oversized generator.
+It contains two separate generated authorization surfaces plus one packaging renderer.
 
 Normal runtime control:
 
@@ -135,6 +135,22 @@ Initial bootstrap control:
 <DOMAIN>_PIPELINE_BOOTSTRAP_MARK_VALIDATED
 <DOMAIN>_PIPELINE_BOOTSTRAP_COMMIT_HANDOFF
 ```
+
+Deployment packaging:
+
+```text
+render_domain_access.py
+  normal domain surface only
+
+render_domain_bootstrap_access.py
+  bootstrap surface only
+
+render_deployment_bundle.py
+  packages ordered base SQL + both generated surfaces
+  no authentication and no credentials
+```
+
+The preferred future protected-workflow entrypoint is one generated environment bundle. Workflow YAML should not duplicate the seven-step SQL dependency order.
 
 Project roles receive generated domain views/procedures only, not direct DML on shared base tables. Project and environment are fixed server-side.
 
@@ -257,7 +273,8 @@ Static CI currently proves:
 - bootstrap state-transition SQL shape;
 - explicit reconciliation-pass gating;
 - checkpoint-regression guards;
-- atomic handoff transaction shape.
+- atomic handoff transaction shape;
+- deterministic deployment-bundle dependency ordering for DEV/UAT/PROD.
 
 Static CI does **not** prove:
 
@@ -282,7 +299,9 @@ SNOWFLAKE_OIDC_AUDIENCE
 
 The wider DEV bootstrap also still needs the real account, platform/project identities, and corresponding environment variables.
 
-The protected platform operational SQL deployment workflow has **not** yet been wired to execute and verify the generated normal + bootstrap domain SQL. Do not describe PR #1 objects as deployed until that workflow wiring and live verification are complete.
+The protected platform operational SQL deployment workflow has **not** yet been wired to render/execute the new environment deployment bundle or verify its objects/grants. The bundle renderer reduces that future workflow change to one deterministic packaging command; it does not itself deploy anything.
+
+Do not describe PR #1 objects as deployed until protected workflow wiring and live verification are complete.
 
 ## 11. Recommended merge/rebase order
 
@@ -303,7 +322,9 @@ Before adding new ingestion technologies, complete live DEV proof in this order:
 
 ```text
 Snowflake DEV + GitHub WIF bootstrap
-  -> deploy PLATFORM_CONTROL base + generated domain surfaces
+  -> render one DEV PLATFORM_CONTROL deployment bundle
+  -> execute bundle through protected workload identity
+  -> verify generated objects/grants
   -> prove HEALTH/TRANSPORT cross-domain denial
   -> prove normal checkpoint/run/check runtime
   -> run bootstrap fail-closed state transitions
