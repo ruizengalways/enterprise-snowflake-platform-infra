@@ -105,8 +105,9 @@ Platform-infra PR #1:
 
 ```text
 feature/domain-scoped-operational-control
-head 3a074ab48bd8edf82fabc01902cbf04d06b2c7fd
+code head 3a074ab48bd8edf82fabc01902cbf04d06b2c7fd
 Platform Control SQL CI: green
+current branch head adds human documentation only after that verified code commit
 ```
 
 It now contains two separate generated surfaces rather than one oversized generator.
@@ -328,7 +329,7 @@ docs/architecture/RBAC_MODEL.md
 docs/architecture/OPERATIONAL_CONTROL_ACCESS.md
 docs/architecture/BOOTSTRAP_HANDOFF_CONTROL.md
 docs/architecture/PIPELINE_PATTERN_COVERAGE.md
-docs/runbooks/TERRAFORM_BOOTSTRAP.md
+docs/runbooks/terraform-platform-bootstrap.md
 snowflake/control/operations/DEPLOYMENT.md
 ```
 
