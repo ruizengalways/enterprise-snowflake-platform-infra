@@ -105,12 +105,12 @@ Platform-infra PR #1:
 
 ```text
 feature/domain-scoped-operational-control
-verified code head 3f892aef9e29b8f6b7cc72a19a7efb8849c9246e
-Platform Control SQL CI run 33290717061: SUCCESS
-later branch commits update human deployment/context documentation only
+verified implementation/doc head 19e62dae017a506b3f51eddd210976a31c4b8a4b
+Platform Control SQL CI run 33290867268: SUCCESS
+current branch may contain later CURRENT_CONTEXT-only commits after that verified head
 ```
 
-It contains two separate generated authorization surfaces plus one packaging renderer.
+It contains two separate generated authorization surfaces plus deployment/verification packaging.
 
 Normal runtime control:
 
@@ -136,7 +136,7 @@ Initial bootstrap control:
 <DOMAIN>_PIPELINE_BOOTSTRAP_COMMIT_HANDOFF
 ```
 
-Deployment packaging:
+Deployment and verification packaging:
 
 ```text
 render_domain_access.py
@@ -148,9 +148,22 @@ render_domain_bootstrap_access.py
 render_deployment_bundle.py
   packages ordered base SQL + both generated surfaces
   no authentication and no credentials
+
+render_verification_sql.py
+  derives expected views/procedures/grants from the same environment metadata
+  rejects missing domain object grants and direct project grants on shared base tables
+  no authentication and no credentials
 ```
 
-The preferred future protected-workflow entrypoint is one generated environment bundle. Workflow YAML should not duplicate the seven-step SQL dependency order.
+The preferred future protected-workflow path is:
+
+```text
+authenticate
+  -> render/execute one environment deployment bundle
+  -> render/execute one environment verification SQL file
+```
+
+Workflow YAML should not duplicate the seven-step SQL dependency order or per-domain object/grant lists.
 
 Project roles receive generated domain views/procedures only, not direct DML on shared base tables. Project and environment are fixed server-side.
 
@@ -274,7 +287,8 @@ Static CI currently proves:
 - explicit reconciliation-pass gating;
 - checkpoint-regression guards;
 - atomic handoff transaction shape;
-- deterministic deployment-bundle dependency ordering for DEV/UAT/PROD.
+- deterministic deployment-bundle dependency ordering for DEV/UAT/PROD;
+- generation of post-deploy checks for expected views/procedures, SELECT/USAGE grants, and forbidden shared-base grants.
 
 Static CI does **not** prove:
 
@@ -299,7 +313,7 @@ SNOWFLAKE_OIDC_AUDIENCE
 
 The wider DEV bootstrap also still needs the real account, platform/project identities, and corresponding environment variables.
 
-The protected platform operational SQL deployment workflow has **not** yet been wired to render/execute the new environment deployment bundle or verify its objects/grants. The bundle renderer reduces that future workflow change to one deterministic packaging command; it does not itself deploy anything.
+The protected platform operational SQL deployment workflow has **not** yet been wired to execute the generated environment deployment bundle and generated verification SQL. These renderers reduce that future workflow change to deterministic no-credential scripts; they do not themselves deploy anything.
 
 Do not describe PR #1 objects as deployed until protected workflow wiring and live verification are complete.
 
@@ -324,7 +338,7 @@ Before adding new ingestion technologies, complete live DEV proof in this order:
 Snowflake DEV + GitHub WIF bootstrap
   -> render one DEV PLATFORM_CONTROL deployment bundle
   -> execute bundle through protected workload identity
-  -> verify generated objects/grants
+  -> execute generated post-deploy verification
   -> prove HEALTH/TRANSPORT cross-domain denial
   -> prove normal checkpoint/run/check runtime
   -> run bootstrap fail-closed state transitions
