@@ -58,8 +58,20 @@ class RenderDomainBootstrapAccessTests(unittest.TestCase):
         self.assertIn("bootstrap already validated", sql)
         self.assertIn("bootstrap handoff already committed", sql)
         self.assertIn("RAISE E_INVALID_STATE", sql)
+        self.assertIn("RAISE E_DETAILS_CONFLICT", sql)
 
-    def test_handoff_commit_is_atomic_with_checkpoint_write(self) -> None:
+    def test_initial_bootstrap_rejects_existing_steady_state_checkpoint(self) -> None:
+        sql = MODULE.render(self.config)
+        start = sql.index(
+            "CREATE OR REPLACE PROCEDURE PLATFORM_CONTROL.OPERATIONS.HEALTH_PIPELINE_BOOTSTRAP_START"
+        )
+        end = sql.index("$$;", start)
+        procedure = sql[start:end]
+        self.assertIn("FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT", procedure)
+        self.assertIn("RAISE E_CHECKPOINT_EXISTS", procedure)
+        self.assertIn("initial bootstrap cannot start after steady-state checkpoint exists", procedure)
+
+    def test_handoff_commit_is_atomic_and_cannot_rewind_checkpoint(self) -> None:
         sql = MODULE.render(self.config)
         commit_start = sql.index(
             "CREATE OR REPLACE PROCEDURE PLATFORM_CONTROL.OPERATIONS.HEALTH_PIPELINE_BOOTSTRAP_COMMIT_HANDOFF"
@@ -67,11 +79,17 @@ class RenderDomainBootstrapAccessTests(unittest.TestCase):
         commit_end = sql.index("$$;", commit_start)
         procedure = sql[commit_start:commit_end]
         self.assertIn("BEGIN TRANSACTION;", procedure)
+        self.assertIn("NOT EQUAL_NULL(CHECKPOINT_VALUE, :V_HANDOFF_POSITION)", procedure)
+        self.assertIn("RAISE E_CHECKPOINT_CONFLICT", procedure)
         self.assertIn("MERGE INTO PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT", procedure)
         self.assertIn("SET STATUS = 'HANDOFF_COMMITTED'", procedure)
         self.assertIn("COMMIT;", procedure)
         self.assertIn("WHEN OTHER THEN", procedure)
         self.assertIn("ROLLBACK;", procedure)
+        self.assertLess(
+            procedure.index("NOT EQUAL_NULL(CHECKPOINT_VALUE, :V_HANDOFF_POSITION)"),
+            procedure.index("MERGE INTO PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT"),
+        )
         self.assertLess(
             procedure.index("MERGE INTO PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT"),
             procedure.index("SET STATUS = 'HANDOFF_COMMITTED'"),
