@@ -34,32 +34,37 @@ analytics_databases:
     project_code: HEALTH
     retention_days: 1
     schemas:
-      - STAGING
-      - INTERMEDIATE
-      - CANONICAL
-      - MARTS
-      - SEMANTIC
+      - BRONZE
+      - SILVER_STAGING
+      - SILVER_INTERMEDIATE
+      - SILVER_CANONICAL
+      - GOLD_MARTS
+      - GOLD_SEMANTIC
+      - DQ
     published_schemas:
-      - MARTS
-      - SEMANTIC
+      - GOLD_MARTS
+      - GOLD_SEMANTIC
   transport_prod:
     name: PROD_TRANSPORT
     project_code: TRANSPORT
     retention_days: 1
     schemas:
-      - STAGING
-      - INTERMEDIATE
-      - CANONICAL
-      - MARTS
-      - SEMANTIC
+      - BRONZE
+      - SILVER_STAGING
+      - SILVER_INTERMEDIATE
+      - SILVER_CANONICAL
+      - GOLD_MARTS
+      - GOLD_SEMANTIC
+      - DQ
     published_schemas:
-      - MARTS
-      - SEMANTIC
+      - GOLD_MARTS
+      - GOLD_SEMANTIC
 
 platform_control:
   name: PLATFORM_CONTROL
   retention_days: 1
   schemas:
+    - CONFIG
     - DEPLOYMENT
     - QUALITY
     - OBSERVABILITY
