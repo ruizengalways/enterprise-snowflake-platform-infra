@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render post-deployment verification SQL for PLATFORM_CONTROL operations."""
+"""Render post-deployment verification SQL for PLATFORM_CONTROL."""
 
 from __future__ import annotations
 
@@ -30,12 +30,15 @@ _BOOTSTRAP_PROCEDURES = (
     "PIPELINE_BOOTSTRAP_MARK_VALIDATED",
     "PIPELINE_BOOTSTRAP_COMMIT_HANDOFF",
 )
+_CONFIG_VIEWS = ("DATASET_CONFIG_SNAPSHOT",)
+_CONFIG_PROCEDURES = ("REGISTER_DATASET_CONFIG_SNAPSHOT",)
 _SHARED_BASE_TABLES = (
     "PIPELINE_CHECKPOINT",
     "PIPELINE_RUN",
     "PIPELINE_CHECK_RESULT",
     "PIPELINE_BOOTSTRAP",
 )
+_CONFIG_BASE_TABLES = ("DATASET_CONFIG_SNAPSHOT",)
 
 
 def _identifier(value: object, field: str) -> str:
@@ -61,25 +64,32 @@ def _project_codes(config: dict) -> tuple[str, list[str]]:
     return environment, codes
 
 
-def _existence_check(relation: str, name_column: str, object_name: str, label: str) -> str:
+def _existence_check(
+    relation: str,
+    name_column: str,
+    schema_column: str,
+    schema: str,
+    object_name: str,
+    label: str,
+) -> str:
     return f"""    -- {label}
     SELECT COUNT(*) INTO :V_COUNT
     FROM PLATFORM_CONTROL.INFORMATION_SCHEMA.{relation}
     WHERE {name_column} = '{object_name}'
-      AND {('TABLE_SCHEMA' if relation == 'VIEWS' else 'PROCEDURE_SCHEMA')} = 'OPERATIONS';
+      AND {schema_column} = '{schema}';
     IF (V_COUNT <> 1) THEN
         RAISE E_OBJECT_MISSING;
     END IF;
 """
 
 
-def _grant_check(role: str, object_name: str, object_type: str, privilege: str) -> str:
-    return f"""    -- {role}: {privilege} on {object_type} {object_name}
+def _grant_check(role: str, schema: str, object_name: str, object_type: str, privilege: str) -> str:
+    return f"""    -- {role}: {privilege} on {object_type} {schema}.{object_name}
     SELECT COUNT(*) INTO :V_COUNT
     FROM PLATFORM_CONTROL.INFORMATION_SCHEMA.OBJECT_PRIVILEGES
     WHERE GRANTEE = '{role}'
       AND OBJECT_CATALOG = 'PLATFORM_CONTROL'
-      AND OBJECT_SCHEMA = 'OPERATIONS'
+      AND OBJECT_SCHEMA = '{schema}'
       AND OBJECT_NAME = '{object_name}'
       AND OBJECT_TYPE = '{object_type}'
       AND PRIVILEGE_TYPE = '{privilege}';
@@ -92,7 +102,7 @@ def _grant_check(role: str, object_name: str, object_type: str, privilege: str) 
 def render(config: dict) -> str:
     environment, codes = _project_codes(config)
     lines = [
-        "-- GENERATED FILE: post-deployment verification for PLATFORM_CONTROL.OPERATIONS.",
+        "-- GENERATED FILE: post-deployment verification for PLATFORM_CONTROL.",
         f"-- Environment metadata: {environment}.",
         "-- Run immediately after the deployment bundle with the platform deployment role.",
         "",
@@ -107,27 +117,40 @@ def render(config: dict) -> str:
 
     for code in codes:
         role = f"AR_{code}_DEPLOY"
-        lines.append(f"    -- Verify {code} domain objects.")
+        lines.append(f"    -- Verify {code} operational and bootstrap objects.")
         for suffix in (*_NORMAL_VIEWS, *_BOOTSTRAP_VIEWS):
             name = f"{code}_{suffix}"
-            lines.append(_existence_check("VIEWS", "TABLE_NAME", name, f"secure/domain view {name}"))
-            lines.append(_grant_check(role, name, "VIEW", "SELECT"))
+            lines.append(_existence_check("VIEWS", "TABLE_NAME", "TABLE_SCHEMA", "OPERATIONS", name, f"secure/domain view {name}"))
+            lines.append(_grant_check(role, "OPERATIONS", name, "VIEW", "SELECT"))
         for suffix in (*_NORMAL_PROCEDURES, *_BOOTSTRAP_PROCEDURES):
             name = f"{code}_{suffix}"
-            lines.append(_existence_check("PROCEDURES", "PROCEDURE_NAME", name, f"owner-rights procedure {name}"))
-            lines.append(_grant_check(role, name, "PROCEDURE", "USAGE"))
+            lines.append(_existence_check("PROCEDURES", "PROCEDURE_NAME", "PROCEDURE_SCHEMA", "OPERATIONS", name, f"owner-rights procedure {name}"))
+            lines.append(_grant_check(role, "OPERATIONS", name, "PROCEDURE", "USAGE"))
 
-        base_names = ", ".join(f"'{name}'" for name in _SHARED_BASE_TABLES)
+        lines.append(f"    -- Verify {code} dataset configuration audit surface.")
+        for suffix in _CONFIG_VIEWS:
+            name = f"{code}_{suffix}"
+            lines.append(_existence_check("VIEWS", "TABLE_NAME", "TABLE_SCHEMA", "CONFIG", name, f"secure/domain config view {name}"))
+            lines.append(_grant_check(role, "CONFIG", name, "VIEW", "SELECT"))
+        for suffix in _CONFIG_PROCEDURES:
+            name = f"{code}_{suffix}"
+            lines.append(_existence_check("PROCEDURES", "PROCEDURE_NAME", "PROCEDURE_SCHEMA", "CONFIG", name, f"owner-rights config procedure {name}"))
+            lines.append(_grant_check(role, "CONFIG", name, "PROCEDURE", "USAGE"))
+
+        operations_names = ", ".join(f"'{name}'" for name in _SHARED_BASE_TABLES)
+        config_names = ", ".join(f"'{name}'" for name in _CONFIG_BASE_TABLES)
         lines.append(
             f"""    -- Project roles must never receive direct shared-base-table privileges.
     SELECT COUNT(*) INTO :V_COUNT
     FROM PLATFORM_CONTROL.INFORMATION_SCHEMA.OBJECT_PRIVILEGES
     WHERE GRANTEE = '{role}'
       AND OBJECT_CATALOG = 'PLATFORM_CONTROL'
-      AND OBJECT_SCHEMA = 'OPERATIONS'
-      AND OBJECT_NAME IN ({base_names})
       AND OBJECT_TYPE = 'TABLE'
-      AND PRIVILEGE_TYPE IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES');
+      AND PRIVILEGE_TYPE IN ('SELECT', 'INSERT', 'UPDATE', 'DELETE', 'TRUNCATE', 'REFERENCES')
+      AND (
+          (OBJECT_SCHEMA = 'OPERATIONS' AND OBJECT_NAME IN ({operations_names}))
+          OR (OBJECT_SCHEMA = 'CONFIG' AND OBJECT_NAME IN ({config_names}))
+      );
     IF (V_COUNT <> 0) THEN
         RAISE E_FORBIDDEN_GRANT;
     END IF;

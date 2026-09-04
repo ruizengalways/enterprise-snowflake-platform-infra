@@ -35,22 +35,25 @@ projects:
       transform: transport_transform
       ci: transport_ci
 
-# Database boundary is environment x data product. CI stays in the DEV account
-# but uses separate project databases so ephemeral PR work cannot collide with DEV.
+# Database boundary is environment x data product. Ordinary new sources do not
+# create new databases or Terraform-owned schemas. BRONZE keeps source identity
+# in object names/metadata; extra source-specific schemas are governance exceptions.
 analytics_databases:
   health_dev:
     name: DEV_HEALTH
     project_code: HEALTH
     retention_days: 1
     schemas:
-      - STAGING
-      - INTERMEDIATE
-      - CANONICAL
-      - MARTS
-      - SEMANTIC
+      - BRONZE
+      - SILVER_STAGING
+      - SILVER_INTERMEDIATE
+      - SILVER_CANONICAL
+      - GOLD_MARTS
+      - GOLD_SEMANTIC
+      - DQ
     published_schemas:
-      - MARTS
-      - SEMANTIC
+      - GOLD_MARTS
+      - GOLD_SEMANTIC
   health_ci:
     name: CI_HEALTH
     project_code: HEALTH
@@ -63,14 +66,16 @@ analytics_databases:
     project_code: TRANSPORT
     retention_days: 1
     schemas:
-      - STAGING
-      - INTERMEDIATE
-      - CANONICAL
-      - MARTS
-      - SEMANTIC
+      - BRONZE
+      - SILVER_STAGING
+      - SILVER_INTERMEDIATE
+      - SILVER_CANONICAL
+      - GOLD_MARTS
+      - GOLD_SEMANTIC
+      - DQ
     published_schemas:
-      - MARTS
-      - SEMANTIC
+      - GOLD_MARTS
+      - GOLD_SEMANTIC
   transport_ci:
     name: CI_TRANSPORT
     project_code: TRANSPORT
@@ -82,6 +87,7 @@ platform_control:
   name: PLATFORM_CONTROL
   retention_days: 1
   schemas:
+    - CONFIG
     - DEPLOYMENT
     - QUALITY
     - OBSERVABILITY
