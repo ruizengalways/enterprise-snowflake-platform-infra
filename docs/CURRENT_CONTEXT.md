@@ -1,47 +1,26 @@
 # Enterprise Snowflake Platform — Current Context
 
-> **Purpose:** fast human handoff for the active workstream. Keep this file short. Detailed architecture belongs in the linked documents; machine contracts belong in schema/config/SQL files.
->
-> **Updated:** 2026-08-30
->
-> **Current phase:** source/static-CI foundation is strong enough to define domain-safe runtime control, metadata-driven SCD2, and safe initial snapshot -> incremental/CDC handoff. No real Snowflake account bootstrap, Terraform apply, project deployment, or live source execution has been proven yet.
+Concise human handoff for a new conversation. Detailed architecture belongs in linked docs; machine truth belongs in Terraform/config/schema/SQL/tests.
 
-## 1. Non-negotiable rules
+## Current phase
 
-- Common technical behavior is metadata-driven; genuine domain/source/business logic stays explicit.
+The source/static foundation now includes domain-scoped runtime/bootstrap control, Medallion database topology, Git-owned dataset configuration snapshots, metadata-driven SCD1/SCD2, and thin one-click domain deployment wrappers.
+
+No real Snowflake DEV bootstrap, WIF authentication, Terraform apply, PLATFORM_CONTROL deployment or live source handoff has been proven yet.
+
+## Non-negotiable rules
+
+- Common technical behavior is metadata-driven; genuine source/domain/business logic stays explicit.
 - Do not turn YAML into a programming language.
-- Human explanation belongs in `docs/`; machine contracts belong in schemas/config/contracts/SQL/tests.
-- No DEV/UAT/PROD Git branches. Promote immutable reviewed Git SHAs.
-- Git owns desired configuration; `PLATFORM_CONTROL` owns mutable runtime state.
-- Shared runtime state must enforce domain isolation server-side. Caller convention is not authorization.
-- Ingestion technology stops at the project-owned RAW contract.
-- Canonical layers remain `RAW -> STAGING -> INTERMEDIATE/CANONICAL -> MARTS -> SEMANTIC`.
-- Prefer Snowflake-native primitives; keep classic table/Stream/Task/DML paths available.
-- Do not start Kafka Connector, direct Snowpipe Streaming, or Openflow demos before live DEV foundation proof.
+- Human docs and machine contracts stay separate.
+- Promote immutable reviewed Git SHAs; do not use DEV/UAT/PROD Git branches.
+- Git owns desired dataset configuration.
+- `PLATFORM_CONTROL.CONFIG` stores immutable deployment audit/readback state, not editable config.
+- `PLATFORM_CONTROL.OPERATIONS` stores mutable runtime state.
+- Domain isolation is enforced server-side through generated secure views / owner-rights procedures.
+- Do not start Kafka Connector, direct Snowpipe Streaming or Openflow comparison before live DEV foundation proof.
 
-## 2. Repository responsibilities
-
-```text
-enterprise-snowflake-platform-infra
-  stable accounts/RBAC/warehouses/WIF/Terraform
-  PLATFORM_CONTROL lifecycle and authorization surfaces
-
-enterprise-snowflake-data-project-framework
-  bounded metadata validation
-  reusable dbt/capture/SCD/quality/runtime helpers
-  reusable CI/deployment workflows
-
-enterprise-snowflake-health-analytics
-enterprise-snowflake-transport-analytics
-  domain RAW contracts/config
-  thin calls into framework primitives
-  real domain-specific SQL where needed
-
-enterprise-snowflake-demo-source-systems
-  deterministic external-style source simulation only
-```
-
-## 3. Snowflake topology
+## Account and domain topology
 
 ```text
 DEV account
@@ -62,300 +41,180 @@ PROD account
   PLATFORM_CONTROL
 ```
 
-CI is a database boundary inside the DEV account, not a fourth Snowflake account.
-
-Per-domain compute remains:
+Stable domain databases use:
 
 ```text
-WH_<DOMAIN>_QUERY
-WH_<DOMAIN>_TRANSFORM
-WH_<DOMAIN>_CI       # DEV account only
-WH_PLATFORM_OPS
+BRONZE
+SILVER_STAGING
+SILVER_INTERMEDIATE
+SILVER_CANONICAL
+GOLD_MARTS
+GOLD_SEMANTIC
+DQ
 ```
 
-## 4. Stable framework baseline versus active stacked work
+Ordinary new sources share the domain `BRONZE` schema. A source-specific schema/database is a governance/security/lifecycle exception, not the default connector boundary.
 
-Framework `main` currently includes merged domain-scoped operational API helpers:
+## Platform control stack
 
-```text
-bbd5e9b2ee30ea911e513074ff5aa15936b994fb
-```
-
-Active framework stack:
-
-```text
-PR #2  feature/metadata-driven-scd2-contract
-       head e0e6f44af1bf97354adf24535729c86a81b3e4d0
-       metadata-driven snapshot/event SCD2
-       Framework CI green
-
-PR #3  feature/bootstrap-handoff-contract
-       base: PR #2 branch
-       head f16ca40c8bed0c81b9e43bc86c8f3a0941249c46
-       initial snapshot -> incremental/CDC handoff
-       Framework CI green
-       Bootstrap Contract CI green
-```
-
-Stacking is deliberate: reviewers should see the bootstrap delta independently from the SCD2 delta. Retarget PR #3 to `main` after PR #2 merges.
-
-## 5. Platform control work
-
-Platform-infra PR #1:
+Platform PR #1:
 
 ```text
 feature/domain-scoped-operational-control
-verified implementation/doc head 19e62dae017a506b3f51eddd210976a31c4b8a4b
-Platform Control SQL CI run 33290867268: SUCCESS
-current branch may contain later CURRENT_CONTEXT-only commits after that verified head
+head 1b838965ab77a5d23597c54c93a075c154e30da0
 ```
 
-It contains two separate generated authorization surfaces plus deployment/verification packaging.
-
-Normal runtime control:
+It provides domain-scoped `OPERATIONS` surfaces for:
 
 ```text
-<DOMAIN>_PIPELINE_CHECKPOINT
-<DOMAIN>_PIPELINE_RUN
-<DOMAIN>_PIPELINE_CHECK_RESULT
-
-<DOMAIN>_ADVANCE_PIPELINE_CHECKPOINT
-<DOMAIN>_PIPELINE_RUN_START
-<DOMAIN>_PIPELINE_RUN_FINISH
-<DOMAIN>_RECORD_PIPELINE_CHECK_RESULT
+PIPELINE_CHECKPOINT
+PIPELINE_RUN
+PIPELINE_CHECK_RESULT
+PIPELINE_BOOTSTRAP
 ```
 
-Initial bootstrap control:
+Project roles receive only their generated domain views/procedures, never direct shared-table DML. Bootstrap enforces explicit reconciliation success, checkpoint-regression denial, and atomic handoff commit.
+
+Platform PR #2 is stacked on PR #1:
 
 ```text
-<DOMAIN>_PIPELINE_BOOTSTRAP
-
-<DOMAIN>_PIPELINE_BOOTSTRAP_START
-<DOMAIN>_PIPELINE_BOOTSTRAP_MARK_SNAPSHOT_LANDED
-<DOMAIN>_PIPELINE_BOOTSTRAP_MARK_VALIDATED
-<DOMAIN>_PIPELINE_BOOTSTRAP_COMMIT_HANDOFF
+feature/medallion-dataset-control-plane
+verified implementation head a086401844d764dee1ef8e8053abe73855878b6e
+Terraform CI: SUCCESS
+Platform Control SQL CI: SUCCESS
 ```
 
-Deployment and verification packaging:
+It adds Medallion schemas plus:
 
 ```text
-render_domain_access.py
-  normal domain surface only
-
-render_domain_bootstrap_access.py
-  bootstrap surface only
-
-render_deployment_bundle.py
-  packages ordered base SQL + both generated surfaces
-  no authentication and no credentials
-
-render_verification_sql.py
-  derives expected views/procedures/grants from the same environment metadata
-  rejects missing domain object grants and direct project grants on shared base tables
-  no authentication and no credentials
+PLATFORM_CONTROL.CONFIG.DATASET_CONFIG_SNAPSHOT
+<DOMAIN>_DATASET_CONFIG_SNAPSHOT
+<DOMAIN>_REGISTER_DATASET_CONFIG_SNAPSHOT
 ```
 
-The preferred future protected-workflow path is:
+Same project/environment/dataset/Git-SHA + same content is idempotent. Reusing the same Git SHA with conflicting config fails closed.
+
+Deployment bundle and post-deploy verification include both OPERATIONS and CONFIG surfaces.
+
+## Framework baseline
+
+Verified framework implementation/domain pin:
 
 ```text
-authenticate
-  -> render/execute one environment deployment bundle
-  -> render/execute one environment verification SQL file
+02e3fca78b453e8a39a1722ce96b15dfc98d7cf8
+Framework CI #175: SUCCESS
+Bootstrap Contract CI #7: SUCCESS
 ```
 
-Workflow YAML should not duplicate the seven-step SQL dependency order or per-domain object/grant lists.
-
-Project roles receive generated domain views/procedures only, not direct DML on shared base tables. Project and environment are fixed server-side.
-
-Read:
+Framework PR stack:
 
 ```text
-docs/architecture/OPERATIONAL_CONTROL_ACCESS.md
-docs/architecture/BOOTSTRAP_HANDOFF_CONTROL.md
-snowflake/control/operations/DEPLOYMENT.md
+PR #2 metadata-driven SCD2
+  -> PR #3 bootstrap handoff
+      -> PR #4 Medallion + config snapshot + stable deployment
 ```
 
-## 6. Bootstrap safety contract
+Framework supports independent capture and target/history strategies, including explicit `scd1_merge`, metadata-driven SCD2, deterministic config hashes and post-build CONFIG registration.
 
-Machine RAW metadata is intentionally small:
+Later framework branch commits may be documentation-only; domain repos should not repin merely because handoff prose changed.
 
-```yaml
-capture:
-  bootstrap:
-    mode: snapshot_then_incremental
-    snapshot_consistency: at_handoff_position
-    incremental_start: exclusive | inclusive_with_deduplication
-    reconciliation_required: true
-```
+## Domain consumer stack
 
-Source-specific LSN/cursor/snapshot mechanics are not encoded in generic YAML.
-
-Platform lifecycle:
+Transport:
 
 ```text
-BOUNDARY_CAPTURED
-  -> SNAPSHOT_LANDED
-  -> SNAPSHOT_VALIDATED
-  -> HANDOFF_COMMITTED
+PR #1 domain runtime + vehicle_status SCD2
+PR #2 bootstrap handoff
+PR #3 Medallion/config audit/one-click deploy
+PR #3 implementation head c96260554487630f15972affc7282073138de8e2
+Metadata CI: SUCCESS
+dbt Static CI: SUCCESS
+PR Workspace: blocked by live ci WIF configuration
 ```
 
-Current static invariants:
+`vehicle_status` is the standard SCD2 reference. `vehicle_position` remains an append/event dataset, not SCD2.
 
-- `SNAPSHOT_VALIDATED` requires explicit `reconciliation_passed = TRUE` plus structured details.
-- Initial bootstrap rejects an already-existing steady-state checkpoint.
-- Final handoff rejects a different existing checkpoint, preventing checkpoint rewind.
-- Final checkpoint write + `HANDOFF_COMMITTED` run in one explicit transaction.
-- The rollback handler is scoped to the transaction block; precondition errors are outside it.
-- Cross-domain project/environment values are not caller-controlled.
-
-## 7. SCD2 contract
-
-Standard SCD2 is strategy-specific rather than one oversized metadata shape.
+Health:
 
 ```text
-scd2_snapshot
-  tracked attributes
-  snapshot execution supplies effective time
-
-scd2_merge / scd2_stream_task
-  effective timestamp
-  deterministic order columns
-  tracked attributes
-  tombstone semantics where present
-  rebuild_affected_keys late-arrival policy
+PR #1 domain runtime proof
+PR #2 Medallion/config audit/one-click deploy
 ```
 
-Standard event-history SCD2 requires append-preserved `full_change`/`full_event` capture. Ordering must preserve RAW ordering and include non-business-key idempotency columns.
+Health `patient` is intentionally `scd1_merge`: its current RAW reference contract does not yet declare real business attributes suitable for SCD2 tracking. Transport remains the SCD2 reference rather than fabricating Health tracked columns for symmetry.
 
-A pure-Python behavior oracle covers replay, updates, late arrival, delete, and reinsert independently from SQL generation.
+## One-click domain deployment contract
 
-Read:
+After a domain revision is on `main`, the domain wrapper is intended to expose only:
 
 ```text
-enterprise-snowflake-data-project-framework/docs/patterns/metadata-driven-scd2.md
+GitHub Actions -> Deploy -> choose dev / uat / prod
 ```
 
-## 8. Domain reference integrations
-
-Health PR #1:
+The shared framework workflow still performs:
 
 ```text
-feature/domain-operational-contract
-head 736460181569d24e5b341955cac94bd9f0cbf87d
-dbt Static CI: green
-PR Workspace: blocked by live Snowflake/WIF environment configuration
+verify selected revision is reachable from main
+  -> verify exact immutable framework pin
+  -> validate metadata
+  -> derive database / warehouse / SILVER_STAGING
+  -> build bounded dbt vars + config hashes
+  -> protected-environment WIF
+  -> dbt build
+  -> only after success register CONFIG snapshots
 ```
 
-It proves the domain-safe operational API is not Transport-specific.
+The thin UI does not weaken immutable promotion controls.
 
-Transport PR #1:
+## Static proof vs live proof
 
-```text
-feature/domain-operational-contract
-head 7cb4e52b6184e41d78a0a0867241404bf54179a1
-Metadata CI: green
-dbt Static CI: green
-PR Workspace: blocked by live Snowflake/WIF environment configuration
-```
+Static CI proves metadata/schema compatibility, deterministic config hashing, dbt offline parse/render, domain object generation, forbidden direct base-table access, bootstrap guards, deployment bundle ordering and generated post-deploy checks.
 
-It adds `vehicle_status` as the reference metadata-driven SCD2 dataset.
+It does not prove real WIF, Snowflake privilege behavior, cross-domain denial, transaction/concurrency semantics, real source snapshot/CDC consistency, retries/recovery or performance/credits.
 
-Transport PR #2 is stacked on PR #1:
+## Live blocker and next gate
 
-```text
-feature/bootstrap-handoff-contract
-head 69158c5b80afd073298a29c267ce560ca9692590
-framework pin f16ca40c8bed0c81b9e43bc86c8f3a0941249c46
-Metadata CI: green
-dbt Static CI: green
-PR Workspace: blocked by live Snowflake/WIF environment configuration
-```
-
-It adds the `vehicle_status` bootstrap handoff reference contract and thin offline renderer.
-
-## 9. What static CI proves versus what it does not
-
-Static CI currently proves:
-
-- metadata schema shape and semantic compatibility;
-- dbt parse/render paths;
-- deterministic SCD2 semantic fixture behavior;
-- generated domain object names and grants;
-- absence of project direct DML grants on shared operational tables;
-- server-fixed project/environment authorization surfaces;
-- bootstrap state-transition SQL shape;
-- explicit reconciliation-pass gating;
-- checkpoint-regression guards;
-- atomic handoff transaction shape;
-- deterministic deployment-bundle dependency ordering for DEV/UAT/PROD;
-- generation of post-deploy checks for expected views/procedures, SELECT/USAGE grants, and forbidden shared-base grants.
-
-Static CI does **not** prove:
-
-- real Snowflake ownership/privilege behavior;
-- WIF authentication;
-- transaction and concurrency behavior under real sessions;
-- Stream/Task runtime behavior;
-- warehouse/query performance;
-- a real source's consistent snapshot + position mechanism;
-- recovery after real source/network failures.
-
-## 10. Current live blocker
-
-No real DEV Snowflake bootstrap has been completed.
-
-The project PR Workspace workflows currently fail before Snowflake work because the GitHub `ci` Environment is missing the approved Snowflake WIF configuration, including:
+GitHub `ci` / stable Environments still need real Snowflake values such as:
 
 ```text
 SNOWFLAKE_ACCOUNT
 SNOWFLAKE_OIDC_AUDIENCE
 ```
 
-The wider DEV bootstrap also still needs the real account, platform/project identities, and corresponding environment variables.
-
-The protected platform operational SQL deployment workflow has **not** yet been wired to execute the generated environment deployment bundle and generated verification SQL. These renderers reduce that future workflow change to deterministic no-credential scripts; they do not themselves deploy anything.
-
-Do not describe PR #1 objects as deployed until protected workflow wiring and live verification are complete.
-
-## 11. Recommended merge/rebase order
+Next engineering gate:
 
 ```text
-1. framework PR #2  metadata-driven SCD2
-2. framework PR #3  bootstrap handoff; retarget to main
-3. platform-infra PR #1 after review of both control surfaces
-4. Transport PR #1 domain runtime + SCD2
-5. Transport PR #2 bootstrap handoff; retarget to main after PR #1
-6. Health PR #1 domain runtime proof
+merge/rebase stacked PRs in dependency order
+  -> bootstrap DEV Snowflake + WIF
+  -> Terraform apply platform account/RBAC/database/warehouse objects
+  -> render + execute DEV PLATFORM_CONTROL deployment bundle
+  -> execute generated verification SQL
+  -> prove HEALTH <-> TRANSPORT cross-domain denial
+  -> prove checkpoint/run/check/config runtime
+  -> prove bootstrap fail-closed transitions and atomic handoff
+  -> one-click deploy one domain to DEV
+  -> connect one real/deterministic external-style source
+  -> prove snapshot -> incremental/CDC handoff, retry/recovery/reconciliation
 ```
 
-Exact order between platform and domain PRs can vary because current proof is static, but do not merge a domain project expecting a runtime surface that the target Snowflake environment has not deployed.
-
-## 12. Next engineering gate
-
-Before adding new ingestion technologies, complete live DEV proof in this order:
+## Recommended merge order
 
 ```text
-Snowflake DEV + GitHub WIF bootstrap
-  -> render one DEV PLATFORM_CONTROL deployment bundle
-  -> execute bundle through protected workload identity
-  -> execute generated post-deploy verification
-  -> prove HEALTH/TRANSPORT cross-domain denial
-  -> prove normal checkpoint/run/check runtime
-  -> run bootstrap fail-closed state transitions
-  -> prove reconciliation FALSE cannot validate
-  -> prove checkpoint rewind is rejected
-  -> atomically commit handoff checkpoint
-  -> connect one real or deterministic external-style source
-  -> prove initial snapshot -> incremental/CDC handoff
-  -> prove retry/recovery/reconciliation
-  -> prove SCD2 rebuild from retained event evidence
+1. framework PR #2
+2. framework PR #3
+3. framework PR #4
+4. platform PR #1
+5. platform PR #2
+6. Transport PR #1
+7. Transport PR #2
+8. Transport PR #3
+9. Health PR #1
+10. Health PR #2
 ```
 
-Only after that foundation should Kafka Connector, direct Snowpipe Streaming, or Openflow comparison work begin.
+Retarget stacked PRs to `main` as lower dependencies merge. Do not claim any source/static object is live-deployed until the DEV bootstrap and live verification gate complete.
 
-## 13. Authoritative human documents
-
-Use this file only as an index. Follow the dedicated documents for detail:
+## Detailed human docs
 
 ```text
 PROJECT_BLUEPRINT.md
@@ -363,9 +222,5 @@ docs/architecture/ACCOUNT_TOPOLOGY.md
 docs/architecture/RBAC_MODEL.md
 docs/architecture/OPERATIONAL_CONTROL_ACCESS.md
 docs/architecture/BOOTSTRAP_HANDOFF_CONTROL.md
-docs/architecture/PIPELINE_PATTERN_COVERAGE.md
-docs/runbooks/terraform-platform-bootstrap.md
 snowflake/control/operations/DEPLOYMENT.md
 ```
-
-Framework-specific human guidance lives in that repository's `docs/patterns/`. Machine schemas/configuration remain authoritative for accepted metadata shape; prose must not override them.
