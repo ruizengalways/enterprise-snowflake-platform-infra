@@ -4,7 +4,7 @@ Concise human handoff for a new conversation. Detailed architecture belongs in l
 
 ## Current phase
 
-The source/static foundation now includes domain-scoped runtime/bootstrap control, Medallion database topology, Git-owned dataset configuration snapshots, metadata-driven SCD1/SCD2, and thin one-click domain deployment wrappers.
+The source/static foundation now includes domain-scoped runtime/bootstrap control, Medallion database topology, Git-owned dataset configuration snapshots, metadata-driven SCD1/SCD2, and statically protected thin domain deployment wrappers.
 
 No real Snowflake DEV bootstrap, WIF authentication, Terraform apply, PLATFORM_CONTROL deployment or live source handoff has been proven yet.
 
@@ -64,16 +64,7 @@ feature/domain-scoped-operational-control
 head 1b838965ab77a5d23597c54c93a075c154e30da0
 ```
 
-It provides domain-scoped `OPERATIONS` surfaces for:
-
-```text
-PIPELINE_CHECKPOINT
-PIPELINE_RUN
-PIPELINE_CHECK_RESULT
-PIPELINE_BOOTSTRAP
-```
-
-Project roles receive only their generated domain views/procedures, never direct shared-table DML. Bootstrap enforces explicit reconciliation success, checkpoint-regression denial, and atomic handoff commit.
+It provides domain-scoped `OPERATIONS` surfaces for checkpoint, run, quality-result and bootstrap state. Project roles receive only generated domain views/procedures, never direct shared-table DML. Bootstrap enforces explicit reconciliation success, checkpoint-regression denial and atomic handoff commit.
 
 Platform PR #2 is stacked on PR #1:
 
@@ -92,9 +83,7 @@ PLATFORM_CONTROL.CONFIG.DATASET_CONFIG_SNAPSHOT
 <DOMAIN>_REGISTER_DATASET_CONFIG_SNAPSHOT
 ```
 
-Same project/environment/dataset/Git-SHA + same content is idempotent. Reusing the same Git SHA with conflicting config fails closed.
-
-Deployment bundle and post-deploy verification include both OPERATIONS and CONFIG surfaces.
+Same project/environment/dataset/Git-SHA + same content is idempotent. Reusing the same Git SHA with conflicting config fails closed. Deployment bundle and post-deploy verification include both OPERATIONS and CONFIG surfaces.
 
 ## Framework baseline
 
@@ -114,9 +103,7 @@ PR #2 metadata-driven SCD2
       -> PR #4 Medallion + config snapshot + stable deployment
 ```
 
-Framework supports independent capture and target/history strategies, including explicit `scd1_merge`, metadata-driven SCD2, deterministic config hashes and post-build CONFIG registration.
-
-Later framework branch commits may be documentation-only; domain repos should not repin merely because handoff prose changed.
+Framework supports independent capture and target/history strategies, explicit `scd1_merge`, metadata-driven SCD2, deterministic config hashes and post-build CONFIG registration. Later framework branch commits may be documentation-only; domain repos should not repin merely because handoff prose changed.
 
 ## Domain consumer stack
 
@@ -125,11 +112,11 @@ Transport:
 ```text
 PR #1 domain runtime + vehicle_status SCD2
 PR #2 bootstrap handoff
-PR #3 Medallion/config audit/one-click deploy
-PR #3 implementation head c96260554487630f15972affc7282073138de8e2
-Metadata CI: SUCCESS
-dbt Static CI: SUCCESS
-PR Workspace: blocked by live ci WIF configuration
+PR #3 Medallion/config audit/thin Deploy wrapper
+verified source/static head b771d036d162a983342344557f37f96e914126b1
+Metadata CI #36: SUCCESS
+dbt Static CI #46: SUCCESS
+PR Workspace #27: blocked before Snowflake execution by missing ci WIF configuration
 ```
 
 `vehicle_status` is the standard SCD2 reference. `vehicle_position` remains an append/event dataset, not SCD2.
@@ -138,14 +125,20 @@ Health:
 
 ```text
 PR #1 domain runtime proof
-PR #2 Medallion/config audit/one-click deploy
+PR #2 Medallion/config audit/thin Deploy wrapper
+verified source/static head 0c70e34930131191f53af0bbb4654a91554b2067
+Metadata CI #18: SUCCESS
+dbt Static CI #27: SUCCESS
+PR Workspace #8: blocked before Snowflake execution by missing ci WIF configuration
 ```
 
-Health `patient` is intentionally `scd1_merge`: its current RAW reference contract does not yet declare real business attributes suitable for SCD2 tracking. Transport remains the SCD2 reference rather than fabricating Health tracked columns for symmetry.
+Health `patient` is intentionally `scd1_merge`: its current RAW reference contract does not declare real business attributes suitable for SCD2 tracking. Transport remains the SCD2 reference rather than fabricating Health tracked columns for symmetry.
 
-## One-click domain deployment contract
+Both domain static suites now protect the Deploy wrapper contract: no manual `git_sha` input, approved immutable framework pin, `github.sha` handoff, and no copied OIDC/token logic in the domain repo.
 
-After a domain revision is on `main`, the domain wrapper is intended to expose only:
+## One-click deployment boundary
+
+Current browser UX after a revision is on `main`:
 
 ```text
 GitHub Actions -> Deploy -> choose dev / uat / prod
@@ -164,11 +157,20 @@ verify selected revision is reachable from main
   -> only after success register CONFIG snapshots
 ```
 
-The thin UI does not weaken immutable promotion controls.
+This is already a one-click deployment of the currently selected `main` revision. It is **not yet a complete same-SHA cross-environment promotion orchestrator**. If `main` advances after DEV, a later UAT/PROD run from newer `main` would use another SHA. Do not call that promotion of the DEV release.
+
+The target remains:
+
+```text
+same immutable SHA
+DEV -> UAT -> PROD
+```
+
+After live DEV is proven, add release/promotion orchestration that carries forward the exact deployed SHA (for example through an immutable release ref or deployment record) without introducing environment source branches.
 
 ## Static proof vs live proof
 
-Static CI proves metadata/schema compatibility, deterministic config hashing, dbt offline parse/render, domain object generation, forbidden direct base-table access, bootstrap guards, deployment bundle ordering and generated post-deploy checks.
+Static CI proves metadata/schema compatibility, deterministic config hashing, dbt offline parse/render, domain object generation, forbidden direct base-table access, bootstrap guards, thin deployment-wrapper boundaries, deployment bundle ordering and generated post-deploy checks.
 
 It does not prove real WIF, Snowflake privilege behavior, cross-domain denial, transaction/concurrency semantics, real source snapshot/CDC consistency, retries/recovery or performance/credits.
 
@@ -192,9 +194,11 @@ merge/rebase stacked PRs in dependency order
   -> prove HEALTH <-> TRANSPORT cross-domain denial
   -> prove checkpoint/run/check/config runtime
   -> prove bootstrap fail-closed transitions and atomic handoff
-  -> one-click deploy one domain to DEV
+  -> one-click deploy one domain current-main revision to DEV
+  -> verify DATASET_CONFIG_SNAPSHOT audit
   -> connect one real/deterministic external-style source
   -> prove snapshot -> incremental/CDC handoff, retry/recovery/reconciliation
+  -> then implement exact same-SHA UAT/PROD promotion orchestration
 ```
 
 ## Recommended merge order
