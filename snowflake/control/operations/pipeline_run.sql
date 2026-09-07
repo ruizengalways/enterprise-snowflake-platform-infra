@@ -1,8 +1,7 @@
 -- Enterprise Snowflake pipeline execution ledger.
 --
--- Lifecycle owner: platform-infra / PLATFORM_CONTROL.
--- One row represents one execution attempt. Configuration stays in Git; this
--- table stores mutable runtime facts only. Do not store source/business payloads.
+-- One row represents one execution attempt. GENERATION binds the run to the
+-- dataset lifecycle in force when the run started; old generations remain audit.
 
 CREATE TABLE IF NOT EXISTS PLATFORM_CONTROL.OPERATIONS.PIPELINE_RUN (
     RUN_ID                  VARCHAR(128)     NOT NULL,
@@ -11,6 +10,7 @@ CREATE TABLE IF NOT EXISTS PLATFORM_CONTROL.OPERATIONS.PIPELINE_RUN (
     ENVIRONMENT             VARCHAR(16)      NOT NULL,
     PIPELINE_ID             VARCHAR(128)     NOT NULL,
     DATASET_ID              VARCHAR(64),
+    GENERATION              NUMBER(38, 0)    NOT NULL DEFAULT 1,
     STATUS                  VARCHAR(16)      NOT NULL,
     STARTED_AT              TIMESTAMP_TZ     NOT NULL,
     FINISHED_AT             TIMESTAMP_TZ,
@@ -31,4 +31,4 @@ CREATE TABLE IF NOT EXISTS PLATFORM_CONTROL.OPERATIONS.PIPELINE_RUN (
     UPDATED_BY              VARCHAR(256)     NOT NULL DEFAULT CURRENT_USER(),
     CONSTRAINT PK_PIPELINE_RUN PRIMARY KEY (RUN_ID, ATTEMPT_NUMBER)
 )
-COMMENT = 'Pipeline execution attempts, checkpoints, row counts and failure metadata; never business payloads.';
+COMMENT = 'Pipeline execution attempts versioned by dataset generation; never business payloads.';
