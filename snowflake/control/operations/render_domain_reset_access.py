@@ -58,6 +58,7 @@ DECLARE
     V_GENERATION NUMBER;
     V_STATE VARCHAR;
     V_EXISTING_COUNT NUMBER;
+    V_EXISTING_STATUS VARCHAR;
     V_RUNNING_COUNT NUMBER;
 BEGIN
     V_DATASET_ID := LOWER(TRIM(:P_DATASET_ID));
@@ -85,7 +86,19 @@ BEGIN
         IF V_EXISTING_COUNT = 0 THEN
             RAISE STATEMENT_ERROR WITH MESSAGE = 'reset_id already belongs to a different dataset';
         END IF;
-        RETURN 'reset already started';
+
+        SELECT STATUS INTO :V_EXISTING_STATUS
+        FROM PLATFORM_CONTROL.OPERATIONS.DATASET_RESET
+        WHERE RESET_ID = :P_RESET_ID
+          AND PROJECT_CODE = {_lit(code)}
+          AND ENVIRONMENT = {_lit(environment)}
+          AND DATASET_ID = :V_DATASET_ID;
+
+        IF V_EXISTING_STATUS = 'RESETTING' THEN
+            RETURN 'reset already started';
+        END IF;
+
+        RAISE STATEMENT_ERROR WITH MESSAGE = 'reset_id is already complete; use a new reset_id';
     END IF;
 
     MERGE INTO PLATFORM_CONTROL.OPERATIONS.DATASET_LIFECYCLE AS target
