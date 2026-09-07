@@ -71,10 +71,8 @@ module "rbac" {
     environment.database_name => toset(local.config.analytics_databases[key].published_schemas)
   }
 
-  # UAT is production-like: human developers can query but do not receive WRITE.
-  # Routine transform compute is machine-only through AR_<DOMAIN>_DEPLOY. Human
-  # emergency access must be granted JIT through enterprise identity governance;
-  # it is intentionally absent from the base Terraform warehouse grants.
+  # UAT ordinary developers remain read-only. Senior Data Engineer+ recovery is
+  # a separate AR_<DOMAIN>_RECOVERY capability with transform compute below.
   grant_developer_write = false
 
   warehouse_grants = merge(
@@ -94,4 +92,11 @@ module "rbac" {
       AR_PLATFORM_ENGINEER = toset([module.warehouse["platform_ops"].fully_qualified_name])
     },
   )
+
+  recovery_warehouse_grants = {
+    for project in values(local.config.projects) :
+    project.code => toset([
+      module.warehouse[project.warehouse_keys.transform].fully_qualified_name,
+    ])
+  }
 }
