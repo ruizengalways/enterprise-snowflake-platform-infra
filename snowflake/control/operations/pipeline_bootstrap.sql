@@ -1,16 +1,13 @@
 -- Runtime state for safe initial snapshot -> incremental/CDC handoff.
 --
--- Lifecycle owner: platform-infra / PLATFORM_CONTROL.
--- Configuration remains in Git RAW contracts; this table stores only mutable
--- operational progress and captured source-boundary evidence.
---
--- Project roles must not receive direct DML on this base table. Domain-scoped
--- secure views and owner-rights procedures are generated separately.
+-- GENERATION binds bootstrap evidence to one dataset lifecycle. A full reset
+-- advances the lifecycle generation instead of deleting old bootstrap history.
 
 CREATE TABLE IF NOT EXISTS PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP (
     PROJECT_CODE              VARCHAR(64)      NOT NULL,
     ENVIRONMENT               VARCHAR(16)      NOT NULL,
     DATASET_ID                VARCHAR(64)      NOT NULL,
+    GENERATION                NUMBER(38, 0)    NOT NULL DEFAULT 1,
     BOOTSTRAP_ID              VARCHAR(128)     NOT NULL,
     STATUS                    VARCHAR(32)      NOT NULL,
     HANDOFF_CHECKPOINT_KIND   VARCHAR(32)      NOT NULL,
@@ -32,7 +29,8 @@ CREATE TABLE IF NOT EXISTS PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP (
         PROJECT_CODE,
         ENVIRONMENT,
         DATASET_ID,
+        GENERATION,
         BOOTSTRAP_ID
     )
 )
-COMMENT = 'Mutable bootstrap handoff state. No business payloads or secrets.';
+COMMENT = 'Mutable bootstrap handoff state versioned by dataset generation. No business payloads or secrets.';
