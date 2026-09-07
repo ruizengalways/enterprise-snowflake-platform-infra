@@ -57,11 +57,15 @@ jobs:
             python snowflake/control/operations/render_domain_bootstrap_access.py \
               --config "config/environments/${env}.yml" \
               --output "${RUNNER_TEMP}/platform-control/${env}-bootstrap.sql"
+            python snowflake/control/operations/render_domain_reset_access.py \
+              --config "config/environments/${env}.yml" \
+              --output "${RUNNER_TEMP}/platform-control/${env}-reset.sql"
             python snowflake/control/config/render_domain_config_access.py \
               --config "config/environments/${env}.yml" \
               --output "${RUNNER_TEMP}/platform-control/${env}-config.sql"
             test -s "${RUNNER_TEMP}/platform-control/${env}-operational.sql"
             test -s "${RUNNER_TEMP}/platform-control/${env}-bootstrap.sql"
+            test -s "${RUNNER_TEMP}/platform-control/${env}-reset.sql"
             test -s "${RUNNER_TEMP}/platform-control/${env}-config.sql"
           done
 
@@ -78,9 +82,13 @@ jobs:
             test -s "$BUNDLE"
             grep -q -- '-- BEGIN BASE: pipeline_checkpoint.sql' "$BUNDLE"
             grep -q -- '-- BEGIN BASE: pipeline_bootstrap.sql' "$BUNDLE"
+            grep -q -- '-- BEGIN BASE: dataset_lifecycle.sql' "$BUNDLE"
+            grep -q -- '-- BEGIN BASE: dataset_reset.sql' "$BUNDLE"
+            grep -q -- '-- BEGIN BASE: dataset_generation_columns.sql' "$BUNDLE"
             grep -q -- '-- BEGIN BASE: dataset_config_snapshot.sql' "$BUNDLE"
             grep -q -- '-- BEGIN GENERATED: normal domain operational access' "$BUNDLE"
             grep -q -- '-- BEGIN GENERATED: bootstrap handoff access' "$BUNDLE"
+            grep -q -- '-- BEGIN GENERATED: dataset reset access' "$BUNDLE"
             grep -q -- '-- BEGIN GENERATED: dataset config snapshot access' "$BUNDLE"
           done
 
@@ -100,17 +108,20 @@ jobs:
             grep -q 'PLATFORM_CONTROL.INFORMATION_SCHEMA.OBJECT_PRIVILEGES' "$VERIFY"
             grep -q "OBJECT_SCHEMA = 'CONFIG'" "$VERIFY"
             grep -q 'DATASET_CONFIG_SNAPSHOT' "$VERIFY"
+            grep -q 'DATASET_RESET' "$VERIFY"
+            grep -q 'AR_HEALTH_RECOVERY' "$VERIFY"
+            grep -q 'AR_TRANSPORT_RECOVERY' "$VERIFY"
             grep -q 'E_FORBIDDEN_GRANT' "$VERIFY"
           done
 
-      - name: Assert no shared-table project DML grants are rendered
+      - name: Assert no shared-table domain DML grants are rendered
         shell: bash
         run: |
           set -euo pipefail
           if grep -REi \
-            'GRANT[[:space:]]+(SELECT|INSERT|UPDATE|DELETE|TRUNCATE|REFERENCES)[[:space:]]+ON[[:space:]]+TABLE[[:space:]]+PLATFORM_CONTROL\.(OPERATIONS\.PIPELINE_|CONFIG\.DATASET_CONFIG_SNAPSHOT)' \
+            'GRANT[[:space:]]+(SELECT|INSERT|UPDATE|DELETE|TRUNCATE|REFERENCES)[[:space:]]+ON[[:space:]]+TABLE[[:space:]]+PLATFORM_CONTROL\.(OPERATIONS\.(PIPELINE_|DATASET_)|CONFIG\.DATASET_CONFIG_SNAPSHOT)' \
             "${RUNNER_TEMP}/platform-control"; then
-            echo "Rendered SQL grants a project role direct access to a shared control table." >&2
+            echo "Rendered SQL grants a domain role direct access to a shared control table." >&2
             exit 1
           fi
 
@@ -119,25 +130,44 @@ jobs:
         run: |
           set -euo pipefail
           if grep -RE 'P_PROJECT_CODE|P_ENVIRONMENT' "${RUNNER_TEMP}/platform-control"; then
-            echo "Rendered project write API exposes a caller-controlled project/environment parameter." >&2
+            echo "Rendered write API exposes caller-controlled project/environment." >&2
             exit 1
           fi
 
-      - name: Assert bootstrap checkpoint commit remains atomic
+      - name: Assert bootstrap checkpoint commit remains atomic and generation aware
         shell: bash
         run: |
           set -euo pipefail
           for file in "${RUNNER_TEMP}"/platform-control/*-bootstrap.sql; do
             grep -q 'PIPELINE_BOOTSTRAP_COMMIT_HANDOFF' "$file"
             grep -q 'P_RECONCILIATION_PASSED BOOLEAN' "$file"
-            grep -q 'RAISE E_RECONCILIATION_FAILED' "$file"
-            grep -q 'RAISE E_CHECKPOINT_EXISTS' "$file"
-            grep -q 'RAISE E_CHECKPOINT_CONFLICT' "$file"
+            grep -q 'bootstrap reconciliation must pass before handoff validation' "$file"
+            grep -q 'initial bootstrap cannot start after current-generation checkpoint exists' "$file"
+            grep -q 'existing current-generation checkpoint differs from bootstrap handoff position' "$file"
+            grep -q 'GENERATION = :V_GENERATION' "$file"
             grep -q 'BEGIN TRANSACTION;' "$file"
             grep -q 'MERGE INTO PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT' "$file"
             grep -q "SET STATUS = 'HANDOFF_COMMITTED'" "$file"
             grep -q 'WHEN OTHER THEN' "$file"
-            grep -q 'ROLLBACK;' "$file"
+            grep -q 'ROLLBACK' "$file"
+          done
+
+      - name: Assert reset is fail-closed and generation based
+        shell: bash
+        run: |
+          set -euo pipefail
+          for file in "${RUNNER_TEMP}"/platform-control/*-reset.sql; do
+            grep -q 'DATASET_RESET_START' "$file"
+            grep -q 'DATASET_RESET_COMPLETE' "$file"
+            grep -q 'V_GENERATION + 1' "$file"
+            grep -q "'RESETTING'" "$file"
+            grep -q "'READY_FOR_INITIAL_LOAD'" "$file"
+            grep -q 'cannot reset while a current-generation pipeline run is RUNNING' "$file"
+            grep -q 'TO ROLE AR_.*_RECOVERY' "$file"
+            if grep -Eqi 'DELETE[[:space:]]+FROM[[:space:]]+PLATFORM_CONTROL\.OPERATIONS\.(PIPELINE_|DATASET_)' "$file"; then
+              echo "Reset must preserve old-generation control history." >&2
+              exit 1
+            fi
           done
 
       - name: Assert config snapshots are immutable and conflict-safe
