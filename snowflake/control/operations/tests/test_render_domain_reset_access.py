@@ -40,6 +40,16 @@ class RenderDomainResetAccessTests(unittest.TestCase):
         self.assertNotIn("DELETE FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT", sql.upper())
         self.assertNotIn("DELETE FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP", sql.upper())
 
+    def test_same_reset_id_is_retryable_only_while_resetting(self) -> None:
+        sql = MODULE.render(self.config)
+        self.assertIn("IF V_EXISTING_STATUS = 'RESETTING' THEN", sql)
+        self.assertIn("RETURN 'reset already started';", sql)
+        self.assertIn("reset_id is already complete; use a new reset_id", sql)
+        self.assertLess(
+            sql.index("IF V_EXISTING_STATUS = 'RESETTING' THEN"),
+            sql.index("reset_id is already complete; use a new reset_id"),
+        )
+
     def test_recovery_role_only_gets_domain_views_and_procedures(self) -> None:
         sql = MODULE.render(self.config)
         self.assertIn("TO ROLE AR_HEALTH_RECOVERY", sql)
