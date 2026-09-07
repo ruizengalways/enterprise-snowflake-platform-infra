@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Render domain-scoped bootstrap handoff views, procedures, and grants."""
+"""Render generation-aware domain-scoped bootstrap handoff access."""
 
 from __future__ import annotations
 
@@ -20,20 +20,25 @@ def _identifier(value: object, field: str) -> str:
     return text
 
 
-def _sql_literal(value: str) -> str:
+def _lit(value: str) -> str:
     return "'" + value.replace("'", "''") + "'"
 
 
 def _view_sql(code: str, environment: str) -> str:
     return f"""CREATE OR REPLACE SECURE VIEW PLATFORM_CONTROL.OPERATIONS.{code}_PIPELINE_BOOTSTRAP AS
-SELECT *
-FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP
-WHERE PROJECT_CODE = {_sql_literal(code)}
-  AND ENVIRONMENT = {_sql_literal(environment)};
+SELECT bootstrap.*
+FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP bootstrap
+LEFT JOIN PLATFORM_CONTROL.OPERATIONS.DATASET_LIFECYCLE lifecycle
+  ON lifecycle.PROJECT_CODE = bootstrap.PROJECT_CODE
+ AND lifecycle.ENVIRONMENT = bootstrap.ENVIRONMENT
+ AND lifecycle.DATASET_ID = bootstrap.DATASET_ID
+WHERE bootstrap.PROJECT_CODE = {_lit(code)}
+  AND bootstrap.ENVIRONMENT = {_lit(environment)}
+  AND bootstrap.GENERATION = COALESCE(lifecycle.CURRENT_GENERATION, 1);
 """
 
 
-def _start_procedure(code: str, environment: str) -> str:
+def _start(code: str, environment: str) -> str:
     return f"""CREATE OR REPLACE PROCEDURE PLATFORM_CONTROL.OPERATIONS.{code}_PIPELINE_BOOTSTRAP_START(
     P_DATASET_ID VARCHAR,
     P_BOOTSTRAP_ID VARCHAR,
@@ -48,326 +53,264 @@ EXECUTE AS OWNER
 AS
 $$
 DECLARE
-    E_CONFLICT EXCEPTION (-20101, 'bootstrap_id already exists with different boundary metadata');
-    E_CHECKPOINT_EXISTS EXCEPTION (-20107, 'initial bootstrap cannot start after steady-state checkpoint exists');
+    V_DATASET_ID VARCHAR;
+    V_GENERATION NUMBER;
+    V_STATE VARCHAR;
     V_EXISTING NUMBER DEFAULT 0;
     V_CONFLICT NUMBER DEFAULT 0;
     V_CHECKPOINT_EXISTS NUMBER DEFAULT 0;
 BEGIN
+    V_DATASET_ID := LOWER(TRIM(:P_DATASET_ID));
+
+    MERGE INTO PLATFORM_CONTROL.OPERATIONS.DATASET_LIFECYCLE target
+    USING (SELECT {_lit(code)} PROJECT_CODE, {_lit(environment)} ENVIRONMENT, :V_DATASET_ID DATASET_ID) source
+      ON target.PROJECT_CODE = source.PROJECT_CODE
+     AND target.ENVIRONMENT = source.ENVIRONMENT
+     AND target.DATASET_ID = source.DATASET_ID
+    WHEN NOT MATCHED THEN INSERT (PROJECT_CODE, ENVIRONMENT, DATASET_ID, CURRENT_GENERATION, STATE)
+    VALUES (source.PROJECT_CODE, source.ENVIRONMENT, source.DATASET_ID, 1, 'ACTIVE');
+
+    SELECT CURRENT_GENERATION, STATE INTO :V_GENERATION, :V_STATE
+    FROM PLATFORM_CONTROL.OPERATIONS.DATASET_LIFECYCLE
+    WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)} AND DATASET_ID = :V_DATASET_ID;
+
+    IF V_STATE = 'RESETTING' THEN
+        RAISE STATEMENT_ERROR WITH MESSAGE = 'dataset reset is in progress';
+    END IF;
+
     SELECT COUNT(*) INTO :V_EXISTING
     FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP
-    WHERE PROJECT_CODE = {_sql_literal(code)}
-      AND ENVIRONMENT = {_sql_literal(environment)}
-      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID))
+    WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)}
+      AND DATASET_ID = :V_DATASET_ID AND GENERATION = :V_GENERATION
       AND BOOTSTRAP_ID = :P_BOOTSTRAP_ID;
 
-    IF (V_EXISTING > 0) THEN
+    IF V_EXISTING > 0 THEN
         SELECT COUNT(*) INTO :V_CONFLICT
         FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP
-        WHERE PROJECT_CODE = {_sql_literal(code)}
-          AND ENVIRONMENT = {_sql_literal(environment)}
-          AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID))
+        WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)}
+          AND DATASET_ID = :V_DATASET_ID AND GENERATION = :V_GENERATION
           AND BOOTSTRAP_ID = :P_BOOTSTRAP_ID
-          AND (
-              HANDOFF_CHECKPOINT_KIND <> LOWER(TRIM(:P_CHECKPOINT_KIND))
-              OR INCREMENTAL_START <> LOWER(TRIM(:P_INCREMENTAL_START))
-              OR NOT EQUAL_NULL(HANDOFF_POSITION, :P_HANDOFF_POSITION)
-          );
-        IF (V_CONFLICT > 0) THEN
-            RAISE E_CONFLICT;
+          AND (HANDOFF_CHECKPOINT_KIND <> LOWER(TRIM(:P_CHECKPOINT_KIND))
+               OR INCREMENTAL_START <> LOWER(TRIM(:P_INCREMENTAL_START))
+               OR NOT EQUAL_NULL(HANDOFF_POSITION, :P_HANDOFF_POSITION));
+        IF V_CONFLICT > 0 THEN
+            RAISE STATEMENT_ERROR WITH MESSAGE = 'bootstrap_id conflicts with current generation boundary metadata';
         END IF;
         RETURN 'bootstrap already started';
     END IF;
 
     SELECT COUNT(*) INTO :V_CHECKPOINT_EXISTS
     FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT
-    WHERE PROJECT_CODE = {_sql_literal(code)}
-      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID))
+    WHERE PROJECT_CODE = {_lit(code)} AND DATASET_ID = :V_DATASET_ID
+      AND GENERATION = :V_GENERATION
       AND CHECKPOINT_KIND = LOWER(TRIM(:P_CHECKPOINT_KIND));
-
-    IF (V_CHECKPOINT_EXISTS > 0) THEN
-        RAISE E_CHECKPOINT_EXISTS;
+    IF V_CHECKPOINT_EXISTS > 0 THEN
+        RAISE STATEMENT_ERROR WITH MESSAGE = 'initial bootstrap cannot start after current-generation checkpoint exists';
     END IF;
 
     INSERT INTO PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP (
-        PROJECT_CODE,
-        ENVIRONMENT,
-        DATASET_ID,
-        BOOTSTRAP_ID,
-        STATUS,
-        HANDOFF_CHECKPOINT_KIND,
-        HANDOFF_POSITION,
-        INCREMENTAL_START,
-        GIT_SHA,
-        BOUNDARY_CAPTURED_AT,
-        ROW_VERSION,
-        UPDATED_AT,
-        UPDATED_BY
+        PROJECT_CODE, ENVIRONMENT, DATASET_ID, GENERATION, BOOTSTRAP_ID,
+        STATUS, HANDOFF_CHECKPOINT_KIND, HANDOFF_POSITION, INCREMENTAL_START,
+        GIT_SHA, BOUNDARY_CAPTURED_AT, ROW_VERSION, UPDATED_AT, UPDATED_BY
     ) VALUES (
-        {_sql_literal(code)},
-        {_sql_literal(environment)},
-        LOWER(TRIM(:P_DATASET_ID)),
-        :P_BOOTSTRAP_ID,
-        'BOUNDARY_CAPTURED',
-        LOWER(TRIM(:P_CHECKPOINT_KIND)),
-        :P_HANDOFF_POSITION,
-        LOWER(TRIM(:P_INCREMENTAL_START)),
-        :P_GIT_SHA,
-        CURRENT_TIMESTAMP(),
-        1,
-        CURRENT_TIMESTAMP(),
-        CURRENT_USER()
+        {_lit(code)}, {_lit(environment)}, :V_DATASET_ID, :V_GENERATION,
+        :P_BOOTSTRAP_ID, 'BOUNDARY_CAPTURED', LOWER(TRIM(:P_CHECKPOINT_KIND)),
+        :P_HANDOFF_POSITION, LOWER(TRIM(:P_INCREMENTAL_START)), :P_GIT_SHA,
+        CURRENT_TIMESTAMP(), 1, CURRENT_TIMESTAMP(), CURRENT_USER()
     );
-
     RETURN 'bootstrap boundary captured';
 END;
 $$;
 """
 
 
-def _snapshot_landed_procedure(code: str, environment: str) -> str:
+def _landed(code: str, environment: str) -> str:
     return f"""CREATE OR REPLACE PROCEDURE PLATFORM_CONTROL.OPERATIONS.{code}_PIPELINE_BOOTSTRAP_MARK_SNAPSHOT_LANDED(
-    P_DATASET_ID VARCHAR,
-    P_BOOTSTRAP_ID VARCHAR,
-    P_SNAPSHOT_ID VARCHAR,
-    P_SNAPSHOT_BATCH_ID VARCHAR
+    P_DATASET_ID VARCHAR, P_BOOTSTRAP_ID VARCHAR, P_SNAPSHOT_ID VARCHAR, P_SNAPSHOT_BATCH_ID VARCHAR
 )
-RETURNS VARCHAR
-LANGUAGE SQL
-EXECUTE AS OWNER
-AS
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER AS
 $$
 DECLARE
-    E_INVALID_STATE EXCEPTION (-20102, 'snapshot landed requires BOUNDARY_CAPTURED state');
-    E_CONFLICT EXCEPTION (-20103, 'snapshot identity conflicts with existing bootstrap state');
+    V_GENERATION NUMBER;
     V_STATUS VARCHAR;
     V_SNAPSHOT_ID VARCHAR;
     V_SNAPSHOT_BATCH_ID VARCHAR;
 BEGIN
+    SELECT CURRENT_GENERATION INTO :V_GENERATION
+    FROM PLATFORM_CONTROL.OPERATIONS.DATASET_LIFECYCLE
+    WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)}
+      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID));
+
     SELECT STATUS, SNAPSHOT_ID, SNAPSHOT_BATCH_ID
       INTO :V_STATUS, :V_SNAPSHOT_ID, :V_SNAPSHOT_BATCH_ID
     FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP
-    WHERE PROJECT_CODE = {_sql_literal(code)}
-      AND ENVIRONMENT = {_sql_literal(environment)}
-      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID))
+    WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)}
+      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID)) AND GENERATION = :V_GENERATION
       AND BOOTSTRAP_ID = :P_BOOTSTRAP_ID;
 
-    IF (V_STATUS IN ('SNAPSHOT_LANDED', 'SNAPSHOT_VALIDATED', 'HANDOFF_COMMITTED')) THEN
-        IF (NOT EQUAL_NULL(V_SNAPSHOT_ID, P_SNAPSHOT_ID)
-            OR NOT EQUAL_NULL(V_SNAPSHOT_BATCH_ID, P_SNAPSHOT_BATCH_ID)) THEN
-            RAISE E_CONFLICT;
+    IF V_STATUS IN ('SNAPSHOT_LANDED', 'SNAPSHOT_VALIDATED', 'HANDOFF_COMMITTED') THEN
+        IF NOT EQUAL_NULL(V_SNAPSHOT_ID, P_SNAPSHOT_ID) OR NOT EQUAL_NULL(V_SNAPSHOT_BATCH_ID, P_SNAPSHOT_BATCH_ID) THEN
+            RAISE STATEMENT_ERROR WITH MESSAGE = 'snapshot identity conflicts with existing bootstrap state';
         END IF;
         RETURN 'snapshot already recorded';
     END IF;
-
-    IF (V_STATUS <> 'BOUNDARY_CAPTURED') THEN
-        RAISE E_INVALID_STATE;
+    IF V_STATUS <> 'BOUNDARY_CAPTURED' THEN
+        RAISE STATEMENT_ERROR WITH MESSAGE = 'snapshot landed requires BOUNDARY_CAPTURED state';
     END IF;
 
     UPDATE PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP
-    SET STATUS = 'SNAPSHOT_LANDED',
-        SNAPSHOT_ID = :P_SNAPSHOT_ID,
-        SNAPSHOT_BATCH_ID = :P_SNAPSHOT_BATCH_ID,
-        SNAPSHOT_LANDED_AT = CURRENT_TIMESTAMP(),
-        ROW_VERSION = ROW_VERSION + 1,
-        UPDATED_AT = CURRENT_TIMESTAMP(),
-        UPDATED_BY = CURRENT_USER()
-    WHERE PROJECT_CODE = {_sql_literal(code)}
-      AND ENVIRONMENT = {_sql_literal(environment)}
-      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID))
-      AND BOOTSTRAP_ID = :P_BOOTSTRAP_ID
-      AND STATUS = 'BOUNDARY_CAPTURED';
-
+    SET STATUS = 'SNAPSHOT_LANDED', SNAPSHOT_ID = :P_SNAPSHOT_ID,
+        SNAPSHOT_BATCH_ID = :P_SNAPSHOT_BATCH_ID, SNAPSHOT_LANDED_AT = CURRENT_TIMESTAMP(),
+        ROW_VERSION = ROW_VERSION + 1, UPDATED_AT = CURRENT_TIMESTAMP(), UPDATED_BY = CURRENT_USER()
+    WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)}
+      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID)) AND GENERATION = :V_GENERATION
+      AND BOOTSTRAP_ID = :P_BOOTSTRAP_ID AND STATUS = 'BOUNDARY_CAPTURED';
     RETURN 'bootstrap snapshot landed';
 END;
 $$;
 """
 
 
-def _validated_procedure(code: str, environment: str) -> str:
+def _validated(code: str, environment: str) -> str:
     return f"""CREATE OR REPLACE PROCEDURE PLATFORM_CONTROL.OPERATIONS.{code}_PIPELINE_BOOTSTRAP_MARK_VALIDATED(
-    P_DATASET_ID VARCHAR,
-    P_BOOTSTRAP_ID VARCHAR,
-    P_RECONCILIATION_PASSED BOOLEAN,
-    P_RECONCILIATION_DETAILS VARIANT
+    P_DATASET_ID VARCHAR, P_BOOTSTRAP_ID VARCHAR, P_RECONCILIATION_PASSED BOOLEAN, P_RECONCILIATION_DETAILS VARIANT
 )
-RETURNS VARCHAR
-LANGUAGE SQL
-EXECUTE AS OWNER
-AS
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER AS
 $$
 DECLARE
-    E_INVALID_STATE EXCEPTION (-20104, 'bootstrap validation requires SNAPSHOT_LANDED state');
-    E_DETAILS_REQUIRED EXCEPTION (-20105, 'reconciliation details are required before handoff validation');
-    E_DETAILS_CONFLICT EXCEPTION (-20109, 'reconciliation outcome conflicts with already validated bootstrap state');
-    E_RECONCILIATION_FAILED EXCEPTION (-20110, 'bootstrap reconciliation must pass before handoff validation');
+    V_GENERATION NUMBER;
     V_STATUS VARCHAR;
-    V_RECONCILIATION_PASSED BOOLEAN;
-    V_RECONCILIATION_DETAILS VARIANT;
+    V_PASSED BOOLEAN;
+    V_DETAILS VARIANT;
 BEGIN
-    IF (P_RECONCILIATION_PASSED IS NULL OR NOT P_RECONCILIATION_PASSED) THEN
-        RAISE E_RECONCILIATION_FAILED;
+    IF P_RECONCILIATION_PASSED IS NULL OR NOT P_RECONCILIATION_PASSED THEN
+        RAISE STATEMENT_ERROR WITH MESSAGE = 'bootstrap reconciliation must pass before handoff validation';
+    END IF;
+    IF P_RECONCILIATION_DETAILS IS NULL THEN
+        RAISE STATEMENT_ERROR WITH MESSAGE = 'reconciliation details are required';
     END IF;
 
-    IF (P_RECONCILIATION_DETAILS IS NULL) THEN
-        RAISE E_DETAILS_REQUIRED;
-    END IF;
+    SELECT CURRENT_GENERATION INTO :V_GENERATION
+    FROM PLATFORM_CONTROL.OPERATIONS.DATASET_LIFECYCLE
+    WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)}
+      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID));
 
     SELECT STATUS, RECONCILIATION_PASSED, RECONCILIATION_DETAILS
-      INTO :V_STATUS, :V_RECONCILIATION_PASSED, :V_RECONCILIATION_DETAILS
+      INTO :V_STATUS, :V_PASSED, :V_DETAILS
     FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP
-    WHERE PROJECT_CODE = {_sql_literal(code)}
-      AND ENVIRONMENT = {_sql_literal(environment)}
-      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID))
+    WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)}
+      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID)) AND GENERATION = :V_GENERATION
       AND BOOTSTRAP_ID = :P_BOOTSTRAP_ID;
 
-    IF (V_STATUS IN ('SNAPSHOT_VALIDATED', 'HANDOFF_COMMITTED')) THEN
-        IF (NOT EQUAL_NULL(V_RECONCILIATION_PASSED, P_RECONCILIATION_PASSED)
-            OR NOT EQUAL_NULL(V_RECONCILIATION_DETAILS, P_RECONCILIATION_DETAILS)) THEN
-            RAISE E_DETAILS_CONFLICT;
+    IF V_STATUS IN ('SNAPSHOT_VALIDATED', 'HANDOFF_COMMITTED') THEN
+        IF NOT EQUAL_NULL(V_PASSED, P_RECONCILIATION_PASSED) OR NOT EQUAL_NULL(V_DETAILS, P_RECONCILIATION_DETAILS) THEN
+            RAISE STATEMENT_ERROR WITH MESSAGE = 'reconciliation outcome conflicts with already validated state';
         END IF;
         RETURN 'bootstrap already validated';
     END IF;
-
-    IF (V_STATUS <> 'SNAPSHOT_LANDED') THEN
-        RAISE E_INVALID_STATE;
+    IF V_STATUS <> 'SNAPSHOT_LANDED' THEN
+        RAISE STATEMENT_ERROR WITH MESSAGE = 'bootstrap validation requires SNAPSHOT_LANDED state';
     END IF;
 
     UPDATE PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP
-    SET STATUS = 'SNAPSHOT_VALIDATED',
-        RECONCILIATION_PASSED = :P_RECONCILIATION_PASSED,
+    SET STATUS = 'SNAPSHOT_VALIDATED', RECONCILIATION_PASSED = :P_RECONCILIATION_PASSED,
         RECONCILIATION_DETAILS = :P_RECONCILIATION_DETAILS,
-        SNAPSHOT_VALIDATED_AT = CURRENT_TIMESTAMP(),
-        ROW_VERSION = ROW_VERSION + 1,
-        UPDATED_AT = CURRENT_TIMESTAMP(),
-        UPDATED_BY = CURRENT_USER()
-    WHERE PROJECT_CODE = {_sql_literal(code)}
-      AND ENVIRONMENT = {_sql_literal(environment)}
-      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID))
-      AND BOOTSTRAP_ID = :P_BOOTSTRAP_ID
-      AND STATUS = 'SNAPSHOT_LANDED';
-
+        SNAPSHOT_VALIDATED_AT = CURRENT_TIMESTAMP(), ROW_VERSION = ROW_VERSION + 1,
+        UPDATED_AT = CURRENT_TIMESTAMP(), UPDATED_BY = CURRENT_USER()
+    WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)}
+      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID)) AND GENERATION = :V_GENERATION
+      AND BOOTSTRAP_ID = :P_BOOTSTRAP_ID AND STATUS = 'SNAPSHOT_LANDED';
     RETURN 'bootstrap snapshot validated';
 END;
 $$;
 """
 
 
-def _commit_procedure(code: str, environment: str) -> str:
+def _commit(code: str, environment: str) -> str:
     return f"""CREATE OR REPLACE PROCEDURE PLATFORM_CONTROL.OPERATIONS.{code}_PIPELINE_BOOTSTRAP_COMMIT_HANDOFF(
-    P_DATASET_ID VARCHAR,
-    P_BOOTSTRAP_ID VARCHAR,
-    P_BATCH_ID VARCHAR,
-    P_GIT_SHA VARCHAR
+    P_DATASET_ID VARCHAR, P_BOOTSTRAP_ID VARCHAR, P_BATCH_ID VARCHAR, P_GIT_SHA VARCHAR
 )
-RETURNS VARCHAR
-LANGUAGE SQL
-EXECUTE AS OWNER
-AS
+RETURNS VARCHAR LANGUAGE SQL EXECUTE AS OWNER AS
 $$
 DECLARE
-    E_INVALID_STATE EXCEPTION (-20106, 'handoff commit requires SNAPSHOT_VALIDATED state');
-    E_CHECKPOINT_CONFLICT EXCEPTION (-20108, 'existing steady-state checkpoint differs from bootstrap handoff position');
+    V_DATASET_ID VARCHAR;
+    V_GENERATION NUMBER;
     V_STATUS VARCHAR;
-    V_CHECKPOINT_KIND VARCHAR;
-    V_HANDOFF_POSITION VARIANT;
-    V_CHECKPOINT_CONFLICT NUMBER DEFAULT 0;
+    V_KIND VARCHAR;
+    V_POSITION VARIANT;
+    V_CONFLICT NUMBER DEFAULT 0;
+    V_LAST_RESET_ID VARCHAR;
 BEGIN
+    V_DATASET_ID := LOWER(TRIM(:P_DATASET_ID));
+    SELECT CURRENT_GENERATION, LAST_RESET_ID INTO :V_GENERATION, :V_LAST_RESET_ID
+    FROM PLATFORM_CONTROL.OPERATIONS.DATASET_LIFECYCLE
+    WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)} AND DATASET_ID = :V_DATASET_ID;
+
     SELECT STATUS, HANDOFF_CHECKPOINT_KIND, HANDOFF_POSITION
-      INTO :V_STATUS, :V_CHECKPOINT_KIND, :V_HANDOFF_POSITION
+      INTO :V_STATUS, :V_KIND, :V_POSITION
     FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP
-    WHERE PROJECT_CODE = {_sql_literal(code)}
-      AND ENVIRONMENT = {_sql_literal(environment)}
-      AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID))
+    WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)}
+      AND DATASET_ID = :V_DATASET_ID AND GENERATION = :V_GENERATION
       AND BOOTSTRAP_ID = :P_BOOTSTRAP_ID;
 
-    IF (V_STATUS = 'HANDOFF_COMMITTED') THEN
-        RETURN 'bootstrap handoff already committed';
-    END IF;
-
-    IF (V_STATUS <> 'SNAPSHOT_VALIDATED') THEN
-        RAISE E_INVALID_STATE;
+    IF V_STATUS = 'HANDOFF_COMMITTED' THEN RETURN 'bootstrap handoff already committed'; END IF;
+    IF V_STATUS <> 'SNAPSHOT_VALIDATED' THEN
+        RAISE STATEMENT_ERROR WITH MESSAGE = 'handoff commit requires SNAPSHOT_VALIDATED state';
     END IF;
 
     BEGIN
         BEGIN TRANSACTION;
-
-        SELECT COUNT(*) INTO :V_CHECKPOINT_CONFLICT
+        SELECT COUNT(*) INTO :V_CONFLICT
         FROM PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT
-        WHERE PROJECT_CODE = {_sql_literal(code)}
-          AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID))
-          AND CHECKPOINT_KIND = :V_CHECKPOINT_KIND
-          AND NOT EQUAL_NULL(CHECKPOINT_VALUE, :V_HANDOFF_POSITION);
-
-        IF (V_CHECKPOINT_CONFLICT > 0) THEN
-            RAISE E_CHECKPOINT_CONFLICT;
+        WHERE PROJECT_CODE = {_lit(code)} AND DATASET_ID = :V_DATASET_ID
+          AND GENERATION = :V_GENERATION AND CHECKPOINT_KIND = :V_KIND
+          AND NOT EQUAL_NULL(CHECKPOINT_VALUE, :V_POSITION);
+        IF V_CONFLICT > 0 THEN
+            RAISE STATEMENT_ERROR WITH MESSAGE = 'existing current-generation checkpoint differs from bootstrap handoff position';
         END IF;
 
-        MERGE INTO PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT AS target
-        USING (
-            SELECT
-                {_sql_literal(code)} AS PROJECT_CODE,
-                LOWER(TRIM(:P_DATASET_ID)) AS DATASET_ID,
-                :V_CHECKPOINT_KIND AS CHECKPOINT_KIND,
-                :V_HANDOFF_POSITION AS CHECKPOINT_VALUE,
-                :P_BATCH_ID AS LAST_SUCCESSFUL_BATCH_ID,
-                :P_GIT_SHA AS LAST_GIT_SHA
-        ) AS source
-          ON target.PROJECT_CODE = source.PROJECT_CODE
-         AND target.DATASET_ID = source.DATASET_ID
-         AND target.CHECKPOINT_KIND = source.CHECKPOINT_KIND
-        WHEN MATCHED THEN UPDATE SET
-            CHECKPOINT_VALUE = source.CHECKPOINT_VALUE,
+        MERGE INTO PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT target
+        USING (SELECT {_lit(code)} PROJECT_CODE, :V_DATASET_ID DATASET_ID,
+                      :V_GENERATION GENERATION, :V_KIND CHECKPOINT_KIND,
+                      :V_POSITION CHECKPOINT_VALUE, :P_BATCH_ID LAST_SUCCESSFUL_BATCH_ID,
+                      :P_GIT_SHA LAST_GIT_SHA) source
+          ON target.PROJECT_CODE = source.PROJECT_CODE AND target.DATASET_ID = source.DATASET_ID
+         AND target.GENERATION = source.GENERATION AND target.CHECKPOINT_KIND = source.CHECKPOINT_KIND
+        WHEN MATCHED THEN UPDATE SET CHECKPOINT_VALUE = source.CHECKPOINT_VALUE,
             LAST_SUCCESSFUL_BATCH_ID = source.LAST_SUCCESSFUL_BATCH_ID,
-            LAST_SUCCESSFUL_AT = CURRENT_TIMESTAMP(),
-            LAST_GIT_SHA = source.LAST_GIT_SHA,
-            ROW_VERSION = target.ROW_VERSION + 1,
-            UPDATED_AT = CURRENT_TIMESTAMP(),
-            UPDATED_BY = CURRENT_USER()
+            LAST_SUCCESSFUL_AT = CURRENT_TIMESTAMP(), LAST_GIT_SHA = source.LAST_GIT_SHA,
+            ROW_VERSION = target.ROW_VERSION + 1, UPDATED_AT = CURRENT_TIMESTAMP(), UPDATED_BY = CURRENT_USER()
         WHEN NOT MATCHED THEN INSERT (
-            PROJECT_CODE,
-            DATASET_ID,
-            CHECKPOINT_KIND,
-            CHECKPOINT_VALUE,
-            LAST_SUCCESSFUL_BATCH_ID,
-            LAST_SUCCESSFUL_AT,
-            LAST_GIT_SHA,
-            ROW_VERSION,
-            UPDATED_AT,
-            UPDATED_BY
+            PROJECT_CODE, DATASET_ID, GENERATION, CHECKPOINT_KIND, CHECKPOINT_VALUE,
+            LAST_SUCCESSFUL_BATCH_ID, LAST_SUCCESSFUL_AT, LAST_GIT_SHA,
+            ROW_VERSION, UPDATED_AT, UPDATED_BY
         ) VALUES (
-            source.PROJECT_CODE,
-            source.DATASET_ID,
-            source.CHECKPOINT_KIND,
-            source.CHECKPOINT_VALUE,
-            source.LAST_SUCCESSFUL_BATCH_ID,
-            CURRENT_TIMESTAMP(),
-            source.LAST_GIT_SHA,
-            1,
-            CURRENT_TIMESTAMP(),
-            CURRENT_USER()
+            source.PROJECT_CODE, source.DATASET_ID, source.GENERATION, source.CHECKPOINT_KIND,
+            source.CHECKPOINT_VALUE, source.LAST_SUCCESSFUL_BATCH_ID, CURRENT_TIMESTAMP(),
+            source.LAST_GIT_SHA, 1, CURRENT_TIMESTAMP(), CURRENT_USER()
         );
 
         UPDATE PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP
-        SET STATUS = 'HANDOFF_COMMITTED',
-            HANDOFF_COMMITTED_AT = CURRENT_TIMESTAMP(),
-            GIT_SHA = :P_GIT_SHA,
-            ROW_VERSION = ROW_VERSION + 1,
-            UPDATED_AT = CURRENT_TIMESTAMP(),
-            UPDATED_BY = CURRENT_USER()
-        WHERE PROJECT_CODE = {_sql_literal(code)}
-          AND ENVIRONMENT = {_sql_literal(environment)}
-          AND DATASET_ID = LOWER(TRIM(:P_DATASET_ID))
-          AND BOOTSTRAP_ID = :P_BOOTSTRAP_ID
-          AND STATUS = 'SNAPSHOT_VALIDATED';
+        SET STATUS = 'HANDOFF_COMMITTED', HANDOFF_COMMITTED_AT = CURRENT_TIMESTAMP(),
+            GIT_SHA = :P_GIT_SHA, ROW_VERSION = ROW_VERSION + 1,
+            UPDATED_AT = CURRENT_TIMESTAMP(), UPDATED_BY = CURRENT_USER()
+        WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)}
+          AND DATASET_ID = :V_DATASET_ID AND GENERATION = :V_GENERATION
+          AND BOOTSTRAP_ID = :P_BOOTSTRAP_ID AND STATUS = 'SNAPSHOT_VALIDATED';
 
+        UPDATE PLATFORM_CONTROL.OPERATIONS.DATASET_LIFECYCLE
+        SET STATE = 'ACTIVE', ROW_VERSION = ROW_VERSION + 1,
+            UPDATED_AT = CURRENT_TIMESTAMP(), UPDATED_BY = CURRENT_USER()
+        WHERE PROJECT_CODE = {_lit(code)} AND ENVIRONMENT = {_lit(environment)}
+          AND DATASET_ID = :V_DATASET_ID AND CURRENT_GENERATION = :V_GENERATION
+          AND STATE = 'READY_FOR_INITIAL_LOAD';
+
+        UPDATE PLATFORM_CONTROL.OPERATIONS.DATASET_RESET
+        SET STATUS = 'COMPLETED', COMPLETED_AT = CURRENT_TIMESTAMP(),
+            UPDATED_AT = CURRENT_TIMESTAMP(), UPDATED_BY = CURRENT_USER()
+        WHERE RESET_ID = :V_LAST_RESET_ID AND STATUS = 'READY_FOR_RELOAD';
         COMMIT;
-    EXCEPTION
-        WHEN OTHER THEN
-            ROLLBACK;
-            RAISE;
-    END;
-
+    EXCEPTION WHEN OTHER THEN ROLLBACK; RAISE; END;
     RETURN 'bootstrap handoff committed';
 END;
 $$;
@@ -387,10 +330,7 @@ def _grants(code: str) -> str:
         f"GRANT USAGE ON SCHEMA PLATFORM_CONTROL.OPERATIONS TO ROLE {role};",
         f"GRANT SELECT ON VIEW PLATFORM_CONTROL.OPERATIONS.{code}_PIPELINE_BOOTSTRAP TO ROLE {role};",
     ]
-    lines.extend(
-        f"GRANT USAGE ON PROCEDURE PLATFORM_CONTROL.OPERATIONS.{name}({signature}) TO ROLE {role};"
-        for name, signature in procedures
-    )
+    lines.extend(f"GRANT USAGE ON PROCEDURE PLATFORM_CONTROL.OPERATIONS.{name}({sig}) TO ROLE {role};" for name, sig in procedures)
     return "\n".join(lines) + "\n"
 
 
@@ -398,30 +338,20 @@ def render(config: dict) -> str:
     environment = _identifier(config.get("environment"), "environment")
     if environment not in _ALLOWED_ENVIRONMENTS:
         raise ValueError(f"unsupported environment: {environment}")
-
     projects = config.get("projects")
     if not isinstance(projects, dict) or not projects:
         raise ValueError("projects must be a non-empty mapping")
-
-    sections = [
-        "-- GENERATED FILE: domain-scoped bootstrap handoff access.\n"
-        "-- Source of truth: config/environments/<env>.yml projects metadata.\n"
-        "-- Project roles receive no direct DML on bootstrap/checkpoint base tables.\n"
-    ]
-
-    for project_key in sorted(projects):
-        project = projects[project_key]
+    sections = ["-- GENERATED FILE: generation-aware domain-scoped bootstrap handoff access.\n"]
+    for key in sorted(projects):
+        project = projects[key]
         if not isinstance(project, dict):
-            raise ValueError(f"projects.{project_key} must be a mapping")
-        code = _identifier(project.get("code"), f"projects.{project_key}.code")
-        sections.append(f"\n-- Domain: {code}; environment: {environment}\n")
-        sections.append(_view_sql(code, environment))
-        sections.append(_start_procedure(code, environment))
-        sections.append(_snapshot_landed_procedure(code, environment))
-        sections.append(_validated_procedure(code, environment))
-        sections.append(_commit_procedure(code, environment))
-        sections.append(_grants(code))
-
+            raise ValueError(f"projects.{key} must be a mapping")
+        code = _identifier(project.get("code"), f"projects.{key}.code")
+        sections.extend([
+            f"\n-- Domain: {code}; environment: {environment}\n",
+            _view_sql(code, environment), _start(code, environment), _landed(code, environment),
+            _validated(code, environment), _commit(code, environment), _grants(code),
+        ])
     return "\n".join(sections)
 
 
@@ -430,11 +360,9 @@ def main() -> None:
     parser.add_argument("--config", required=True, type=Path)
     parser.add_argument("--output", required=True, type=Path)
     args = parser.parse_args()
-
     config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-    sql = render(config)
     args.output.parent.mkdir(parents=True, exist_ok=True)
-    args.output.write_text(sql, encoding="utf-8")
+    args.output.write_text(render(config), encoding="utf-8")
 
 
 if __name__ == "__main__":
