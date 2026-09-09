@@ -3,9 +3,11 @@
 # ADMIN inherits it so recovery never depends on one specific person being present.
 #
 # Recovery is deliberately practical rather than over-gated: the role can read
-# its stable domain database and TRUNCATE domain tables, plus use the transform
-# warehouse. It does not receive INSERT/UPDATE/DELETE/OWNERSHIP and receives no
-# direct DML on shared PLATFORM_CONTROL base tables.
+# its stable domain database and TRUNCATE reconstructable Silver/Gold tables, plus
+# use the transform warehouse. Bronze is trusted landed evidence and remains
+# read-only to this processing-recovery capability. The role does not receive
+# INSERT/UPDATE/DELETE/OWNERSHIP and receives no direct DML on shared
+# PLATFORM_CONTROL base tables.
 
 locals {
   recovery_warehouse_pairs = {
@@ -19,6 +21,21 @@ locals {
       ]
     ]) : item.key => item
   }
+
+  # Processing reset must never destroy ingestion-owned Bronze evidence. Limit
+  # destructive recovery privileges to the stable reconstructable processing
+  # layers. DQ is intentionally excluded as well; dataset reset plans should name
+  # only the relations they are responsible for rebuilding.
+  recovery_schema_entries = {
+    for key, entry in local.schema_entries : key => entry
+    if contains([
+      "SILVER_STAGING",
+      "SILVER_INTERMEDIATE",
+      "SILVER_CANONICAL",
+      "GOLD_MARTS",
+      "GOLD_SEMANTIC",
+    ], entry.schema)
+  }
 }
 
 resource "snowflake_account_role" "recovery" {
@@ -26,7 +43,7 @@ resource "snowflake_account_role" "recovery" {
   for_each = var.project_codes
 
   name    = "AR_${each.value}_RECOVERY"
-  comment = "Senior engineer recovery capability for ${each.value} full dataset reset; managed by enterprise-snowflake-platform-infra."
+  comment = "Senior engineer processing-recovery capability for ${each.value}; managed by enterprise-snowflake-platform-infra."
 }
 
 resource "snowflake_grant_account_role" "recovery_to_project_admin" {
@@ -47,13 +64,13 @@ resource "snowflake_grant_database_role" "read_to_project_recovery" {
   parent_role_name   = snowflake_account_role.recovery[each.value.project].name
 }
 
-# Full reset needs only TRUNCATE on reconstructable domain tables. Grant it on
-# current and future tables so newly deployed datasets remain recoverable without
-# a Terraform change. Views/semantic views are rebuilt by the normal pipeline and
-# do not need a destructive privilege here.
+# Full processing reset needs TRUNCATE only on reconstructable Silver/Gold tables.
+# Grant it on current and future tables in those schemas so newly deployed
+# datasets remain recoverable without a Terraform change. Bronze is deliberately
+# excluded: source re-ingestion/reset is a separate ingestion concern.
 resource "snowflake_grant_privileges_to_account_role" "recovery_current_table_truncate" {
   provider = snowflake.securityadmin
-  for_each = local.schema_entries
+  for_each = local.recovery_schema_entries
 
   privileges        = ["TRUNCATE"]
   account_role_name = snowflake_account_role.recovery[each.value.project].name
@@ -68,7 +85,7 @@ resource "snowflake_grant_privileges_to_account_role" "recovery_current_table_tr
 
 resource "snowflake_grant_privileges_to_account_role" "recovery_future_table_truncate" {
   provider = snowflake.securityadmin
-  for_each = local.schema_entries
+  for_each = local.recovery_schema_entries
 
   privileges        = ["TRUNCATE"]
   account_role_name = snowflake_account_role.recovery[each.value.project].name
