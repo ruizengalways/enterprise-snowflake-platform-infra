@@ -1,8 +1,7 @@
 -- Enterprise Snowflake pipeline quality/check result ledger.
 --
--- Lifecycle owner: platform-infra / PLATFORM_CONTROL.
--- Freshness, reconciliation and other technical checks write structured results
--- here. Business payloads and regulated values must not be persisted in DETAILS.
+-- GENERATION binds each technical check to the dataset lifecycle that produced it.
+-- Historical generations remain available for audit after a full reset.
 
 CREATE TABLE IF NOT EXISTS PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECK_RESULT (
     RUN_ID                  VARCHAR(128)     NOT NULL,
@@ -10,6 +9,7 @@ CREATE TABLE IF NOT EXISTS PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECK_RESULT (
     PROJECT_CODE            VARCHAR(64)      NOT NULL,
     ENVIRONMENT             VARCHAR(16)      NOT NULL,
     DATASET_ID              VARCHAR(64)      NOT NULL,
+    GENERATION              NUMBER(38, 0)    NOT NULL DEFAULT 1,
     CHECK_TYPE              VARCHAR(32)      NOT NULL,
     CHECK_NAME              VARCHAR(128)     NOT NULL,
     STATUS                  VARCHAR(16)      NOT NULL,
@@ -20,4 +20,4 @@ CREATE TABLE IF NOT EXISTS PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECK_RESULT (
     CHECKED_AT              TIMESTAMP_TZ     NOT NULL DEFAULT CURRENT_TIMESTAMP(),
     RECORDED_BY             VARCHAR(256)     NOT NULL DEFAULT CURRENT_USER()
 )
-COMMENT = 'Structured technical freshness/reconciliation/check outcomes linked to pipeline runs.';
+COMMENT = 'Structured technical check outcomes versioned by dataset generation.';

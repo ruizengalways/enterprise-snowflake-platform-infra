@@ -2,24 +2,103 @@
 
 ## Ownership boundary
 
-Terraform owns the stable `PLATFORM_CONTROL` database and managed schemas. Native SQL in this directory owns operational tables and procedures inside `PLATFORM_CONTROL.OPERATIONS`.
+Terraform owns the stable `PLATFORM_CONTROL` database and managed schemas. Native SQL in this directory owns operational tables, procedures and generated domain access surfaces inside `PLATFORM_CONTROL.OPERATIONS`.
 
-Do not manage the same table/procedure in Terraform and native SQL at the same time.
+Do not manage the same table/view/procedure in Terraform and native SQL at the same time.
 
 The operational SQL lifecycle is deliberately separate from Terraform state because these objects evolve as database-native operational contracts and procedures. Do not wrap them in Terraform `local-exec`, `null_resource`, or similar imperative escape hatches.
 
-## DEV deployment order
+## Preferred deployment entrypoint
 
-The DEV deployment workflow executes files in this explicit order on one Snowflake CLI connection:
+Protected deployment workflows should consume generated artifacts rather than reimplement object lists or SQL ordering in workflow YAML:
+
+```bash
+python snowflake/control/operations/render_deployment_bundle.py \
+  --config config/environments/dev.yml \
+  --output /tmp/platform-control-dev.sql
+
+python snowflake/control/operations/render_verification_sql.py \
+  --config config/environments/dev.yml \
+  --output /tmp/platform-control-dev-verify.sql
+```
+
+The intended protected workflow is therefore small:
+
+```text
+authenticate and verify account/role
+  -> render deployment bundle
+  -> execute deployment bundle
+  -> render post-deploy verification SQL
+  -> execute verification SQL
+```
+
+Both renderers are packaging/verification generators only. They do not authenticate to Snowflake and contain no credentials.
+
+`render_deployment_bundle.py` assembles repository-owned base SQL and environment-generated domain surfaces in dependency order. `render_verification_sql.py` derives expected domain objects and grants from the same environment metadata so workflow YAML does not duplicate HEALTH/TRANSPORT object names.
+
+The lower-level renderers remain separate and are useful for focused tests and debugging:
+
+```bash
+python snowflake/control/operations/render_domain_access.py \
+  --config config/environments/dev.yml \
+  --output /tmp/platform-control-domain-access-dev.sql
+
+python snowflake/control/operations/render_domain_bootstrap_access.py \
+  --config config/environments/dev.yml \
+  --output /tmp/platform-control-bootstrap-access-dev.sql
+```
+
+Keeping these generators separate prevents normal runtime control and one-time bootstrap handoff from becoming one oversized implementation.
+
+## Generated domain surfaces
+
+Project deployment roles must not receive direct DML on the shared operational base tables.
+
+The normal operational renderer creates, for every configured project code:
+
+```text
+<DOMAIN>_PIPELINE_CHECKPOINT
+<DOMAIN>_PIPELINE_RUN
+<DOMAIN>_PIPELINE_CHECK_RESULT
+
+<DOMAIN>_ADVANCE_PIPELINE_CHECKPOINT(...)
+<DOMAIN>_PIPELINE_RUN_START(...)
+<DOMAIN>_PIPELINE_RUN_FINISH(...)
+<DOMAIN>_RECORD_PIPELINE_CHECK_RESULT(...)
+```
+
+The bootstrap renderer creates:
+
+```text
+<DOMAIN>_PIPELINE_BOOTSTRAP
+
+<DOMAIN>_PIPELINE_BOOTSTRAP_START(...)
+<DOMAIN>_PIPELINE_BOOTSTRAP_MARK_SNAPSHOT_LANDED(...)
+<DOMAIN>_PIPELINE_BOOTSTRAP_MARK_VALIDATED(...)
+<DOMAIN>_PIPELINE_BOOTSTRAP_COMMIT_HANDOFF(...)
+```
+
+Both generators grant `AR_<DOMAIN>_DEPLOY` only database/schema usage plus access to that domain's generated views/procedures. Project and environment are fixed server-side for writes; callers do not submit them.
+
+The bootstrap control-plane design and acceptance criteria are documented separately in `docs/architecture/BOOTSTRAP_HANDOFF_CONTROL.md`.
+
+## Deployment order encoded by the bundle
+
+The bundle renderer owns this dependency order:
 
 1. `pipeline_checkpoint.sql`
 2. `pipeline_run.sql`
 3. `pipeline_check_result.sql`
-4. `advance_pipeline_checkpoint.sql`
+4. `pipeline_bootstrap.sql`
+5. `advance_pipeline_checkpoint.sql`
+6. generated normal domain operational access
+7. generated bootstrap handoff access
 
-The table DDL is idempotent for initial creation. Procedure deployment uses the repository definition as the authoritative body.
+`PIPELINE_BOOTSTRAP_COMMIT_HANDOFF` depends on `PIPELINE_CHECKPOINT`, so the checkpoint base table must exist before bootstrap procedures are created.
 
-DDL is not treated as one rollback-able transaction. Snowflake DDL has its own transaction semantics, so deployment is ordered and fail-fast instead of pretending a multi-file DDL release can be atomically rolled back.
+The table DDL is idempotent for initial creation. Procedure/view deployment uses repository definitions plus environment metadata as the authoritative source.
+
+DDL is not treated as one rollback-able transaction. Snowflake DDL has its own transaction semantics, so deployment is ordered and fail-fast instead of pretending a multi-file DDL release can be atomically rolled back. The runtime handoff procedure itself uses an explicit transaction for the checkpoint + bootstrap-state commit.
 
 ## Authentication
 
@@ -45,15 +124,32 @@ Do not run the operational SQL deployment before:
 
 1. `identity/dev` is applied and WIF is verified;
 2. `platform/dev` is applied and `PLATFORM_CONTROL.OPERATIONS` exists;
-3. the `dev` GitHub Environment contains the Snowflake organization/account/audience variables already required by Terraform plan;
-4. the platform role has the expected ownership/DDL rights on `PLATFORM_CONTROL.OPERATIONS`.
+3. `project-identity/dev` has created the configured `AR_<DOMAIN>_DEPLOY` roles before generated grants are applied;
+4. the `dev` GitHub Environment contains the Snowflake organization/account/audience variables already required by Terraform plan;
+5. the platform role has the expected ownership/DDL/grant rights on `PLATFORM_CONTROL.OPERATIONS` and can observe the deployed objects/grants through `PLATFORM_CONTROL.INFORMATION_SCHEMA`.
 
 There is intentionally no automatic deploy on push while the reference environment has not completed live bootstrap.
 
-## Verification
+## Post-deploy verification
 
-The workflow verifies the authenticated user/role/account before deployment and queries `INFORMATION_SCHEMA` / `SHOW PROCEDURES` after deployment. A deployment is not considered live-proven until the workflow succeeds against a real DEV Snowflake account.
+The generated verification SQL uses immediate `PLATFORM_CONTROL.INFORMATION_SCHEMA` metadata rather than delayed usage-history views. It fails closed when:
+
+- any expected domain operational/bootstrap view is missing;
+- any expected domain procedure is missing;
+- `AR_<DOMAIN>_DEPLOY` is missing SELECT on one of its domain views;
+- `AR_<DOMAIN>_DEPLOY` is missing USAGE on one of its domain procedures;
+- a project deployment role has direct SELECT/INSERT/UPDATE/DELETE/TRUNCATE/REFERENCES on a shared `PIPELINE_*` base table.
+
+Snowflake's Information Schema exposes views, procedures, and object privileges to the active role when it can see those objects. The platform deployment role therefore remains the verification executor; project roles are not elevated merely to perform verification.
+
+## Static verification
+
+Static CI renders DEV/UAT/PROD lower-level surfaces, complete ordered deployment bundles, and post-deploy verification SQL. It checks bundle dependency markers, generated verification coverage, project/environment server-fixing, absence of project direct shared-table DML grants, explicit bootstrap reconciliation gating, checkpoint-regression guards, and the handoff transaction shape.
+
+Live DEV must additionally prove both directions of cross-domain denial, fail-closed bootstrap transitions, reconciliation failure rejection, checkpoint-regression rejection, idempotent retry behavior, and atomic handoff commit before the authorization/runtime boundary is considered production-proven.
+
+The current implementation branch has source/static bundle and verification rendering with tests. The existing protected DEV workflow still needs bundle execution plus generated verification execution wired into it; do not describe these surfaces as deployed until that change and live verification succeed.
 
 ## Promotion
 
-After DEV is live-proven, UAT and PROD should receive equivalent protected workflows that execute the same immutable Git SHA. Do not maintain environment-specific SQL branches.
+After DEV is live-proven, UAT and PROD should receive equivalent protected workflows that execute the same immutable Git SHA and render deployment/verification artifacts from their own environment metadata. Do not maintain environment-specific SQL branches or copied per-domain SQL files.

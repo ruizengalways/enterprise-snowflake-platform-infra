@@ -103,6 +103,13 @@ module "rbac" {
       AR_PLATFORM_ENGINEER = toset([module.warehouse["platform_ops"].fully_qualified_name])
     },
   )
+
+  recovery_warehouse_grants = {
+    for project in values(local.config.projects) :
+    project.code => toset([
+      module.warehouse[project.warehouse_keys.transform].fully_qualified_name,
+    ])
+  }
 }
 
 module "workspace_access" {
