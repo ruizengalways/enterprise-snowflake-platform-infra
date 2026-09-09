@@ -1,81 +1,41 @@
-# ADR-035 — Capture Fidelity and Reusable SCD Consumers
+# ADR-035 — Silver Correctness and SCD Consumer Contract
 
-- **Status:** Accepted
-- **Date:** 2026-08-29
-- **Builds on:** ADR-031 — Reusable Capture Archetypes and Dynamic Table Fallback
-
-## Context
-
-Enterprise source systems expose materially different change fidelity: full snapshots, timestamp watermarks, lookback windows, tombstones, net CDC, full transaction-log changes, event streams, API cursors and file increments.
-
-ADR-031 defines the bounded capture archetypes and the rule that classic Snowflake implementations remain available when Dynamic Tables are unsuitable. This decision defines how reusable SCD consumers interpret those capture contracts.
-
-The framework must not pretend that every source can provide complete delete detection or transaction-level history. Source fidelity is the upper bound on downstream history fidelity.
+- **Status:** Replaced — 2026-09-09
 
 ## Decision
 
-Preserve familiar source/capture scenarios for onboarding, but implement the bounded capture archetypes defined by ADR-031:
+Silver is the **data correctness layer**. It owns grain, canonical typing, deduplication, business keys, CDC interpretation, current state, SCD1, SCD2, deletes, deterministic ordering, idempotency, late-arriving data and authoritative history.
+
+Gold is the **business derivation layer**. It owns business joins, KPI logic, aggregation, marts, reporting entities and semantic preparation.
+
+## SCD2
+
+An SCD2 entity publishes one authoritative history implementation:
 
 ```text
-snapshot
-watermark
-net_change
-full_change
-snapshot_diff
-cursor_or_file
+SILVER_CANONICAL.<ENTITY>_HISTORY
+  -> historical consumers
+  -> <ENTITY>_CURRENT view
+       -> GOLD
 ```
 
-RAW contracts separately declare capture fidelity:
+The history contract preserves:
 
 ```text
-current_state
-net_change
-full_change
-full_event
+valid_from
+valid_to
+is_current
+version_order
 ```
 
-Source fidelity is authoritative. A downstream implementation cannot claim history that was already collapsed upstream.
+and deterministic source ordering, delete/tombstone semantics, replay/idempotency, reinsert behavior and late-arrival correction. Gold should consume `<ENTITY>_CURRENT`; it should not duplicate `where is_current = true` in every mart.
 
-SCD is a consumer of the capture contract:
+The correctness-first Framework implementation may rebuild deterministic history from retained event evidence. Any future affected-key optimization must prove identical invariants and behavior before replacing that path.
 
-- SCD1 first reduces each processing window to one deterministic row per business key before MERGE.
-- snapshot SCD2 uses transactional close + insert and can infer deletes only at snapshot granularity.
-- full-change/full-event SCD2 retains immutable event history and uses correctness-first affected-key history rebuild.
-- low-latency full-change/full-event SCD2 may use an append-only Stream + Triggered Task; Stream consumption and history replacement occur in one transaction.
-- metadata validation rejects structurally invalid combinations such as `scd2_snapshot` over a `full_change` capture contract or `scd2_stream_task` over current-state/net-change fidelity.
+## SCD1
 
-Dynamic Table SCD projections are optional wrappers only. Every supported Dynamic Table path retains a classic regular-table implementation. Production Dynamic Table refresh mode is explicit; the framework does not default to `AUTO`.
+SCD1 remains current-state semantics. Readable domain SQL resolves the intended source row when necessary; the reusable stateful materialization performs keyed upsert and source-contract tombstone deletes.
 
-## RAW preservation rules
+## Source fidelity
 
-A full snapshot cannot use destructive overwrite as its only authoritative RAW evidence when delete inference, SCD2, replay, reconciliation or audit is required. Preserve snapshot batches with snapshot/batch identity, then derive current-state or diff projections.
-
-Full-change/full-event capture writes immutable events to a regular Snowflake table before any Stream consumer. A Stream is an offset/delta consumer, not the system of record for complete CDC history.
-
-## Runtime state
-
-Git stores capture configuration. Mutable checkpoint/source-position/cursor/snapshot/file progress lives in `PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT` and advances only after successful target processing.
-
-Snowflake-owned Stream offsets are not duplicated into a custom offset ledger.
-
-## Correctness contract
-
-Reusable SCD2 targets enforce these invariants:
-
-```text
-at most one current row per business key
-valid non-negative version ranges
-no overlapping history ranges
-unique deterministic version ordinal per business key
-```
-
-The framework includes a deterministic SQL behavioral oracle covering duplicate replay, no-op same state, updates, delete/reinsert gaps, late events, ordering ties and equal-timestamp versions. Static CI proves parse/render/discovery; live Snowflake execution remains a DEV verification gate.
-
-## Consequences
-
-- A new domain selects a bounded capture contract rather than implementing source mechanics from scratch.
-- Source limitations remain visible in metadata and CI.
-- Late/out-of-order full-change events can repair history by recomputing only affected business keys from immutable evidence.
-- Classic table/Stream/Task/MERGE/Snowflake-Scripting implementations remain the reliability baseline.
-- Dynamic Tables can be adopted where benchmarked and operationally acceptable without redesigning the contract.
-- High-volume projects may introduce optimized SCD2 fast paths only after proving the same invariants as the correctness-first implementation.
+A downstream consumer cannot invent history fidelity that the landed source evidence does not contain. Raw/source contracts therefore remain separate from downstream dataset maintenance metadata.

@@ -1,124 +1,68 @@
-# ADR-030 — Basic Metadata-Driven dbt Load Strategies
+# ADR-030 — Hybrid Dataset Metadata v2
 
 ## Status
 
-Accepted — 2026-08-29
+Superseded and replaced — 2026-09-09
 
-## Context
+The previous combined load-strategy API is intentionally removed. There is no compatibility mapping.
 
-The platform has an approved load-strategy vocabulary in dataset metadata:
+## Decision
+
+Dataset execution metadata has three orthogonal axes:
+
+```yaml
+load:
+  strategy: scd2
+materialization:
+  type: table
+runtime:
+  mode: dbt
+```
+
+`load.strategy` describes maintenance semantics only:
 
 ```text
 full_refresh
 append_only
 incremental_merge
-scd2_snapshot
-scd2_merge
-scd2_stream_task
+scd1
+scd2
+custom
 ```
 
-A project should not duplicate standard dbt materialization settings and unique-key configuration in every model when those technical choices are already declared in validated dataset metadata. At the same time, the framework must not infer business filters, joins, source predicates or late-arrival semantics that differ by dataset.
-
-## Decision
-
-The shared framework owns a bounded metadata-to-dbt bridge.
-
-Validated project metadata is rendered into dbt vars before parse/run. A project model identifies the governed dataset, for example:
-
-```jinja
-{{ enterprise_snowflake_framework.esf_configure_dataset('vehicle_position') }}
-```
-
-The framework implements these **basic** standard strategies through `esf_configure_dataset()`:
-
-### `full_refresh`
-
-Maps to a dbt table materialization. The model query remains explicit project SQL.
-
-### `append_only`
-
-Maps to dbt incremental materialization with Snowflake incremental strategy `append`.
-
-The basic macro does **not** invent a source watermark/checkpoint predicate. The rows returned by the model on an incremental invocation are the rows dbt appends. A dataset/source-specific extraction/window predicate therefore remains explicit unless the project is consuming one of the separately implemented framework capture/checkpoint primitives.
-
-### `incremental_merge`
-
-Maps to dbt incremental materialization with Snowflake incremental strategy `merge` and derives `unique_key` from validated `dataset.business_key` metadata. Composite business keys are retained as a list.
-
-## Deliberately outside the basic macro
-
-The following approved strategies deliberately fail compilation in the basic-load macro:
+`materialization.type` describes the Snowflake/dbt object:
 
 ```text
-scd2_snapshot
-scd2_merge
-scd2_stream_task
+table
+view
+dynamic_table
+snapshot
+custom
 ```
 
-This does **not** mean SCD2 is unimplemented in the framework. SCD2 requires dedicated correctness-oriented macros and invariant tests and therefore must not silently degrade to a generic dbt incremental model.
-
-A dataset with:
-
-```yaml
-implementation: custom
-```
-
-also fails the standard configuration macro. Custom implementation remains explicit project code while still participating in standard metadata, tests, observability and reconciliation contracts.
-
-## Metadata bridge
-
-`render_dbt_vars.py` validates the project tree first and exposes only bounded technical metadata under:
+`runtime.mode` describes who runs it:
 
 ```text
-esf_project
-esf_datasets
+dbt
+snowflake_managed
+task
+stream_task
+external
+custom
 ```
 
-It does not expose arbitrary SQL/business-rule fields because those fields do not belong in the metadata schema.
+Names that combine these concerns, such as `scd2_stream_task` or `scd2_merge`, are not part of the architecture.
 
-The reusable project dbt static-check action renders the same vars and passes them to offline `dbt parse`, ensuring checked-in project configuration and metadata are compatible.
+## Boundary
+
+Metadata is technical configuration, not a SQL DSL. JOIN, CASE, filters, GROUP BY, window functions and business expressions remain in readable domain SQL.
+
+The Framework may translate bounded technical configuration into dbt materialization config, query tags, control-plane calls, DQ and stateful correctness mechanics. It must not generate domain transformations.
+
+## Custom
+
+`custom` is first-class on each axis. A custom dataset can still reuse deployment, query tags, run registration, config snapshots, DQ, reconciliation, RBAC and reset lifecycle while keeping its business implementation domain-owned.
 
 ## Verification
 
-Framework CI uses dbt Core `1.12.3` and dbt-snowflake `1.12.0` and inspects the generated manifest to prove:
-
-```text
-full_refresh      -> materialized=table
-append_only       -> materialized=incremental, incremental_strategy=append
-incremental_merge -> materialized=incremental, incremental_strategy=merge, unique_key from metadata
-```
-
-This is configuration-level proof only. Live Snowflake execution, idempotency, performance and recovery behavior still require integration tests once DEV infrastructure exists.
-
-## Consequences
-
-Positive:
-
-- dataset technical metadata becomes the source of truth for standard materialization behavior;
-- project models remain explicit SQL rather than YAML-generated transformations;
-- business keys are not duplicated between metadata and dbt config;
-- unsupported SCD2/custom cases fail clearly rather than receiving a misleading default;
-- future domains receive the same mechanics without copy/paste.
-
-Trade-offs:
-
-- the basic `append_only` materialization itself does not decide source extraction/checkpoint semantics;
-- freshness/reconciliation/audit are separate framework/runtime concerns rather than hidden materialization hooks;
-- SCD2 remains intentionally outside the basic macro because its correctness contract is materially richer.
-
-## Implementation status — 2026-08-29
-
-The broader framework has since implemented the separate primitives this ADR intentionally kept out of `esf_configure_dataset()`:
-
-```text
-capture archetype helpers
-checkpoint read/advance helpers
-pipeline run/check-result helpers
-freshness/reconciliation helpers
-SCD2 snapshot
-SCD2 immutable-event affected-key rebuild
-SCD2 Stream + Triggered Task
-SCD2 invariants + deterministic behavior oracle
-```
-
-Therefore the durable boundary is **basic materialization helper vs dedicated runtime/SCD primitives**, not “implemented vs future”. See ADR-031 for capture archetypes and ADR-035 for SCD consumer semantics.
+Framework CI validates schema v2, parses/compiles a mixed-strategy project, runs focused SCD correctness behavior tests and performs static Snowflake/security contract checks. Live Snowflake execution is a separate WIF acceptance gate and is not inferred from static CI.
