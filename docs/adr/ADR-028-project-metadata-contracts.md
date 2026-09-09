@@ -1,17 +1,24 @@
-# ADR-028 — Project, dataset, and RAW metadata contracts
+# ADR-028 — Project, dataset, and landed-data metadata contracts
 
-- **Status:** Accepted
-- **Date:** 2026-08-29
+- **Status:** Accepted — revised for Hybrid Framework v2 on 2026-09-09
+- **Original date:** 2026-08-29
 
 ## Context
 
-Future Health, Transport, and new domains need a common way to declare stable technical behaviour without copying implementation logic or turning YAML into a second programming language.
+Health, Transport, and future domains need a common way to declare stable technical processing behaviour without copying implementation logic or turning YAML into a second programming language.
 
-The framework needs machine-validatable metadata before dbt environment resolution, reusable load strategies, CI/CD and reconciliation can be safely generalized.
+Hybrid Framework v2 also makes the ownership boundary explicit:
+
+```text
+External source -> ingestion -> BRONZE | SILVER -> GOLD -> semantic
+                                      ^ Framework processing boundary
+```
+
+Source acquisition technology and connector progress such as SQL Server LSNs, Kafka offsets, API cursors, file-discovery state, or Openflow runtime state are not Framework metadata and are not Framework checkpoints.
 
 ## Decision
 
-Define three versioned JSON Schema contracts in `enterprise-snowflake-data-project-framework`:
+The Framework owns three machine-validatable JSON Schema contracts:
 
 ```text
 project_schema/project.schema.json
@@ -19,12 +26,19 @@ project_schema/dataset.schema.json
 project_schema/raw_contract.schema.json
 ```
 
-### Project metadata
-
-Contains only project identity/ownership metadata:
+All current contracts require:
 
 ```text
-schema_version
+schema_version: 2
+```
+
+Schema v1 is superseded and is not a compatibility contract for new project work.
+
+### Project metadata
+
+Project metadata contains project identity and ownership only:
+
+```text
 project.code
 project.name
 project.repository
@@ -33,36 +47,66 @@ project.owner_team
 
 ### Dataset metadata
 
-Contains stable technical processing metadata:
+Dataset metadata answers **how the landed data is processed**. The three principal axes are orthogonal:
 
 ```text
-id
-owner_team
-raw_contract
-load_strategy
-implementation
-business_key
-watermark_column
-freshness
-reconciliation
+load.strategy
+materialization.type
+runtime.mode
 ```
 
-Approved `load_strategy` values remain:
+Current load strategies are:
 
 ```text
 full_refresh
 append_only
 incremental_merge
-scd2_snapshot
-scd2_merge
-scd2_stream_task
+scd1
+scd2
+custom
 ```
 
-`implementation` is `standard` or `custom`. `custom` is an escape hatch for genuine domain differences, not an exemption from testing/reconciliation/observability.
+Current materialization types are:
 
-### RAW contract metadata
+```text
+table
+view
+dynamic_table
+snapshot
+custom
+```
 
-Defines the stable ingestion/downstream boundary:
+Current runtime modes are:
+
+```text
+dbt
+snowflake_managed
+task
+stream_task
+external
+custom
+```
+
+Do not recombine those axes into names such as `scd2_merge` or `scd2_stream_task`.
+
+Dataset metadata may also contain bounded technical configuration such as:
+
+```text
+business key
+watermark column used by downstream processing
+SCD2 effective/order/tracked/delete semantics
+logical compute workload
+freshness
+reconciliation measures
+```
+
+`custom` is a first-class escape hatch for genuinely different technical behavior. It is not an exemption from observability, quality, deployment, config-snapshot, or reset controls where those contracts still apply.
+
+### Landed-data / Bronze contract
+
+The file remains named `raw_contract.schema.json` for repository compatibility, but its architectural meaning is the contract for source-faithful data already landed in Bronze.
+
+It declares properties of the evidence downstream processing can rely on, including:
 
 ```text
 source_system
@@ -71,40 +115,45 @@ grain
 business_key
 source_timestamp
 columns + types/nullability/classification
-change_semantics
-cadence
-retention_days
+change_semantics: snapshot | append | cdc
+capture_fidelity: current_state | net_change | full_change | full_event
+ordering_columns
+idempotency_key
 breaking_change_policy
 ```
 
+The contract can describe delete/tombstone semantics present in the landed data. It does not operate the source connector and does not store where the connector should resume.
+
 ## Validation
 
-The framework validator performs both JSON Schema validation and limited cross-field/reference checks, including:
+The Framework validator performs JSON Schema validation plus bounded cross-field/reference checks, including:
 
 - project/dataset/contract shape and allowed vocabulary;
+- `schema_version == 2`;
 - unique dataset ids;
-- referenced RAW contract exists inside the project root;
-- keyed incremental/SCD2 strategies require a dataset business key;
+- referenced landed-data contract exists inside the project root;
+- keyed incremental/SCD strategies require a business key;
+- SCD2 requires explicit effective time, deterministic order, tracked columns, and late-arrival policy;
 - freshness warning threshold cannot exceed error threshold;
-- RAW business-key/source-timestamp fields must exist in declared columns;
-- CDC operation/sequence columns must be present and declared;
-- duplicate RAW column names are rejected.
+- declared key/timestamp/operation/order/idempotency columns must exist where required;
+- duplicate contract column names are rejected.
 
 ## Non-goals
 
 Metadata does **not** encode:
 
-- business joins;
-- metric formulas;
-- domain calculations;
+- source extraction SQL/API calls;
+- connector LSN/offset/cursor state;
+- business joins or metric formulas;
 - arbitrary SQL expressions;
+- domain calculations;
 - branching orchestration programs.
 
-Those remain explicit SQL/code.
+Those remain in the system that owns them.
 
 ## Consequences
 
-- project onboarding gets a stable validation contract before broader dbt implementation;
-- framework features can consume predictable metadata without domain-specific copy/paste;
-- schema versions make future breaking metadata changes explicit;
-- semantic validation stays intentionally narrow and technical rather than becoming an orchestration engine.
+- a domain database may mix full refresh, incremental merge, SCD1, SCD2, Dynamic Tables, Tasks, and custom datasets without creating separate control systems;
+- Framework behavior stays metadata-driven without becoming a YAML programming language;
+- ingestion can change technology without forcing downstream metadata redesign, provided the landed Bronze contract remains compatible;
+- breaking metadata changes are explicit through schema versions rather than silent compatibility assumptions.
