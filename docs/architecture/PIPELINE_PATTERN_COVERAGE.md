@@ -1,268 +1,330 @@
-# Pipeline Pattern Coverage Audit
+# Pipeline Pattern Coverage — Hybrid Framework v2
 
 ## Purpose
 
-This document records how the Enterprise Snowflake reference platform maps to the pipeline-design patterns in:
+This document explains how common snapshot, incremental, CDC and event patterns map to the **v2 ownership boundary**.
 
-- `ruizengalways/data-engineering-cheetsheet/README.md`
-- `ruizengalways/data-engineering-cheetsheet/docs/pipeline-design-walkthrough.md`
-
-Audit date: **2026-08-29**.
-
-The cheatsheet's core model is:
+The first question is no longer “which Framework capture archetype should own this source?” The correct sequence is:
 
 ```text
-data semantics
-  -> capture / delivery
-  -> cursor / checkpoint
-  -> Bronze meaning
-  -> Silver meaning
-  -> fidelity / recovery
+source semantics
+  -> source/connector delivery capability
+  -> landed BRONZE evidence and fidelity
+  -> downstream load/history semantics
+  -> materialization/runtime choice
+  -> recovery proof
 ```
 
-The platform uses the same reasoning model but keeps its canonical physical-layer vocabulary:
-
-```text
-external source
-  -> project-owned RAW contract
-  -> STAGING
-  -> INTERMEDIATE / CANONICAL
-  -> MARTS
-  -> SEMANTIC
-```
-
-`Bronze`, `Silver`, and `Gold` in the cheatsheet describe **semantic responsibilities**, not additional Snowflake schemas in this platform.
-
-## Audit basis and version boundary
-
-Health and Transport currently pin executable framework release:
-
-```text
-b1896aa110632e94c21010695ee000c9181d9caf
-```
-
-At the time of this audit, framework `main` is four commits ahead of that revision and the diff contains documentation files only. Therefore the implementation coverage below applies to the project-pinned executable framework revision as well as current framework `main`.
-
-No item in this document should be interpreted as live Snowflake proof. Real remote state, Snowflake account bootstrap, WIF execution, external source ingestion and live runtime testing remain pending.
+The Framework starts after Bronze is landed. Source connector checkpoints, source extraction predicates and source-side bootstrap consistency are ingestion concerns.
 
 ## Status vocabulary
 
 ```text
-READY
-  Required framework contract and reusable Snowflake/dbt primitives exist in source/static CI.
-  A source adapter or project SQL can still be required because source/business semantics are intentionally explicit.
+READY DOWNSTREAM
+  The raw/source contract and Framework v2 can safely express/consume the landed evidence.
+  Source ingestion may still need source-specific implementation.
 
-PARTIAL
-  The pattern is representable, but an important reusable contract/runtime piece is still missing or ambiguous.
-
-GAP
-  Current v1 framework contracts cannot safely represent the case without a design/code change.
+INGESTION RESPONSIBILITY
+  The hard part is extracting/delivering the source correctly; do not move it into Framework metadata.
 
 BY DESIGN
-  The remaining implementation is intentionally project/domain-specific and should not become generic framework YAML/code.
+  Business/source-specific transformation remains explicit SQL/code.
+
+LIVE GATE
+  Source/static contracts exist, but real Snowflake/WIF/runtime behavior is not yet proven.
 ```
 
-A `READY` pattern is still **not live-proven** until the DEV control plane and real source path exist.
+No status below is a claim of live production readiness.
 
-# 1. Cheatsheet 14-pattern coverage
+## 1. Pattern matrix
 
-| # | Cheatsheet pattern | Platform mapping | Framework status | Current boundary |
-|---:|---|---|---|---|
-| 1 | Full Snapshot -> Current Bronze | `snapshot` + `current_state`; current projection / `full_refresh` | **PARTIAL** | Snapshot semantics are supported, but v1 metadata does not explicitly declare `current-only RAW` versus retained snapshot evidence. The platform allows a current projection, but overwrite-only RAW must not be the only copy when delete inference, replay, reconciliation or SCD2 history is required. |
-| 2 | Full Snapshot -> Snapshot Bronze | `snapshot` + `current_state` + `snapshot_id` | **READY** | Retained complete snapshot batches, `esf_snapshot_diff()`, current projection and `esf_scd2_snapshot_apply_sql()` exist. Source extraction itself remains adapter-specific. |
-| 3 | Watermark -> Current Bronze | `watermark` + `current_state` + checkpoint + current MERGE | **READY** | Contract/checkpoint/latest-observation/MERGE pieces exist. Source predicate/extraction remains explicit. End-to-end runtime is currently blocked by the domain-scoped `PLATFORM_CONTROL` access gap. |
-| 4 | Watermark + Lookback -> Current Bronze | `watermark` + `lookback_minutes` + latest-by-key + current MERGE | **READY** | Lookback metadata and deterministic ordering exist. The extractor must calculate/read the overlap window and checkpoint advancement must occur only after successful processing. |
-| 5 | Watermark + Lookback -> Raw Append Bronze | append RAW observations + `watermark` + `lookback_minutes` + idempotency | **READY** | `append_only`, checkpoint helpers, `esf_latest_observation()` and current MERGE primitives compose this pattern. APPEND preserves observations received; it does not create unseen source history. |
-| 6 | Watermark + Soft Delete -> Current Bronze | current-state watermark row containing delete state | **PARTIAL** | This remains **watermark/current-state semantics**, not net-change merely because the row is called a tombstone. v1 metadata lacks a first-class `soft_delete_column/value` contract and therefore project SQL must currently interpret the delete flag explicitly. |
-| 7 | Watermark + Lookback + Soft Delete -> Raw Append Bronze | append current-state observations + lookback + explicit soft-delete interpretation | **PARTIAL** | Lookback/idempotency/current-projection pieces exist, but soft-delete-row semantics are not yet first-class metadata. Source tombstone retention versus recovery window is also not explicitly modeled. |
-| 8 | Net Changes -> Current Bronze | `net_change` + `net_change` fidelity + ordered/deduped MERGE | **READY** | Net-change evidence and explicit delete operation can feed `esf_merge_current_state_sql()`. History guarantee is only net-window fidelity. |
-| 9 | Net Changes -> Append Bronze | append net-window evidence | **READY** | `net_change` capture plus append evidence and deterministic identity are supported. Downstream current/SCD history cannot claim full-change fidelity. |
-| 10 | Full / All Changes -> Event Bronze | `full_change` + `full_change` fidelity + immutable event RAW | **READY** | Ordering/idempotency metadata, append-only Streams, Triggered Tasks, current projection and full-change SCD2 consumers exist. Generic consumer assumes each non-delete event carries enough state to build the requested projection; before/after-image capability is not yet explicit metadata. |
-| 11 | Full Changes -> Current Bronze (lossy) | full-change event input -> ordered latest/current projection | **READY** | `esf_latest_observation()` / Dynamic Table current projection + MERGE can intentionally collapse history. The reference design prefers retaining immutable event RAW first when replay/audit may matter. |
-| 12 | Business Events | `full_change` archetype + `full_event` fidelity | **READY / BY DESIGN** | Capture, ordering, idempotency and event-driven Snowflake execution are reusable. Converting domain events into a canonical business-event contract or entity state remains explicit project SQL because it is business semantics. |
-| 13 | Snapshot Diff -> Current | `snapshot_diff` + `net_change` fidelity -> MERGE current | **READY** | `esf_snapshot_diff()` derives I/U/D from complete comparable snapshots and can feed the current MERGE path. |
-| 14 | Snapshot Diff -> Append Changes | retained snapshots -> derived append diff | **READY** | The diff primitive exists and the derived changes can be appended as replayable evidence before downstream current/SCD consumers. Fidelity remains snapshot-grain. |
+| Source/delivery pattern | Safe Bronze evidence | Downstream v2 use | Boundary/status |
+| --- | --- | --- | --- |
+| Full snapshot, current-only use | Complete landed snapshot/current table | `full_refresh`, SCD1/current projection if history is not required | READY DOWNSTREAM; source snapshot consistency is ingestion-owned |
+| Retained complete snapshots | Immutable snapshot batches with snapshot identity/time | snapshot comparison, reconciliation, custom/SCD logic where complete snapshots are sufficient | READY DOWNSTREAM; retention policy must preserve required replay window |
+| Watermark/current-state extraction | Latest observations for rows the source returns | current projection, `incremental_merge`, SCD1 where deletes are represented | READY DOWNSTREAM; source watermark and overlap query are ingestion-owned |
+| Watermark + lookback | Replayed observations with deterministic identity/order | dedupe/latest-row SQL then current-state maintenance | READY DOWNSTREAM; overlap calculation/checkpoint belongs to ingestion unless downstream owns a landed-data boundary |
+| Watermark + soft-delete row | Current-state rows including an explicit retained delete flag | readable project SQL interprets the source flag; SCD1/current target can delete/mark state | READY DOWNSTREAM / BY DESIGN; a soft-delete row is not a CDC delete event |
+| Net-change CDC | Ordered change evidence, possibly only final change per source interval | current-state application; limited history only to the fidelity actually delivered | READY DOWNSTREAM; do not claim full event history |
+| Full-change CDC | Append-preserved ordered changes including delete events | SCD1 or event-history SCD2; replay and late-arrival correction when identity/order are deterministic | READY DOWNSTREAM; Transport is the reference SCD2 case |
+| Business events | Immutable domain events | append/event marts or explicit state projection | READY DOWNSTREAM / BY DESIGN; event-to-business-state meaning remains domain SQL |
+| Snapshot diff | Complete comparable snapshots retained long enough to derive I/U/D | explicit diff SQL can feed current or append change evidence | BY DESIGN; do not pretend inferred diff has finer fidelity than snapshot cadence |
+| API cursor / file feed | Landed rows/files with deterministic source identity and ordering where needed | append/current/custom downstream processing | READY DOWNSTREAM; API cursor/file discovery and retry state are ingestion-owned |
+| Kafka / streaming events | Append-preserved events in Bronze with partition/offset or equivalent event identity when exposed | append, current projection or SCD depending on delivered fidelity | READY DOWNSTREAM; Kafka Connector/source offsets are connector-owned |
+| Snowflake table changes | Landed mutable/append Snowflake table | native Streams + Tasks where appropriate | READY DOWNSTREAM; Snowflake owns Stream offset and Task history |
 
-## Overall result
+## 2. Raw/source contract v2
 
-The platform can represent all fourteen cheatsheet patterns at the architecture level.
+The raw/source contract describes the **evidence contract**, not connector implementation.
 
-Reusable framework primitives are already sufficient for **10 of the 14 patterns** without a new generic abstraction. Four patterns are intentionally marked `PARTIAL` because the remaining gaps are semantically important rather than cosmetic:
+Relevant fields include:
 
 ```text
-1. current-only RAW versus retained RAW evidence is not a v1 metadata field
-6. watermark + soft-delete row is not first-class delete metadata
-7. watermark + lookback + soft-delete row has the same delete-contract gap
-10. full-change before/after/reconstructible-state capability is not explicit metadata
+source_system
+entity
+grain
+business_key
+columns
+source_timestamp
+change_semantics.mode = snapshot | append | cdc
+operation_column / sequence_column / delete semantics when applicable
+capture_fidelity
+ordering_columns
+idempotency_key
+cadence
+retention_days
+breaking_change_policy
 ```
 
-Pattern 10 is still executable for full-state/post-image event contracts; the limitation matters when a source emits partial update deltas or image semantics that require source-specific reconstruction.
-
-# 2. Important semantic corrections from the audit
-
-## 2.1 Soft-delete row is not automatically net change
-
-The cheatsheet correctly distinguishes:
+It intentionally does **not** contain:
 
 ```text
-current-state row
+SQL Server LSN checkpoint
+Kafka consumer/connector offset state
+API cursor state
+connector retry schedule
+source extraction query
+source-side snapshot/CDC bootstrap transaction
+Framework-owned connector archetype
+```
+
+Those belong to the source/ingestion implementation.
+
+## 3. Fidelity rules
+
+Downstream guarantees may never exceed the evidence delivered into Bronze.
+
+```text
+current-state observations
+  cannot recreate unseen intermediate changes
+
+net-change feed
+  cannot claim full-change history
+
+snapshot history
+  cannot claim event-time changes between snapshots
+
+full-change/full-event evidence
+  can support event-history SCD only when ordering/idempotency are deterministic
+```
+
+For standard event-history SCD2, the Framework validator requires append-preserved `full_change` or `full_event` fidelity. If a source collapses changes before Bronze, use current-state semantics or an explicit project-specific design rather than inventing history.
+
+## 4. Delete semantics
+
+Keep these distinct:
+
+```text
+soft-delete current-state row
   id=300, is_deleted=true
-  -> watermark/current-state semantics
+  -> the source still returns a current observation carrying delete state
 
-change-feed event
-  position=5001, DELETE, id=300
-  -> net_change or full_change semantics depending on the feed
+CDC delete/tombstone event
+  position=5001, operation=DELETE, id=300
+  -> ordered change evidence
+
+physical delete with no delete evidence
+  -> plain watermark/current-state extraction cannot make deletes authoritative
 ```
 
-The platform must preserve this distinction.
+A downstream SCD/current model can only act on delete evidence that actually arrives. Periodic complete reconciliation or another authoritative delete feed is required when the source physically deletes rows without exposing delete state.
 
-Do **not** classify a watermark-delivered soft-delete row as `net_change` merely because documentation uses the word `tombstone`.
+## 5. Ordering, identity and time
 
-## 2.2 Cursor and event identity are separate
-
-The current contract already models this correctly:
+Three concepts are separate:
 
 ```text
-capture.checkpoint_kind
-  = where to continue
+source/connector continuation position
+  where ingestion resumes
 
-capture.idempotency_columns
-  = what exact version/event was processed
+idempotency identity
+  which exact landed event/version has already been processed
 
-capture.ordering_columns
-  = source order when order matters
+business/effective ordering
+  how downstream state/history should be ordered
 ```
 
-Examples:
+A Kafka offset or LSN may contribute to event identity/order, but it remains connector state when the connector owns continuation. The Framework raw contract may declare the landed ordering/idempotency columns required for downstream deterministic behavior without owning the connector checkpoint itself.
+
+Likewise, CDC/change time and business-effective time are not automatically the same. Business-effective semantics remain explicit project design.
+
+## 6. Downstream strategy mapping
+
+Once Bronze evidence exists, dataset metadata chooses target behavior independently from acquisition technology:
 
 ```text
-watermark / rowversion
-LSN / SCN / source position
-Kafka partition + offset
-API cursor
-file identity
+load.strategy
+  full_refresh
+  append_only
+  incremental_merge
+  scd1
+  scd2
+  custom
+
+materialization.type
+  table | view | dynamic_table | snapshot | custom
+
+runtime.mode
+  dbt | snowflake_managed | task | stream_task | external | custom
 ```
 
-A checkpoint value is not assumed to be a unique event identifier.
+The same `full_change` Bronze contract could feed an append event table, SCD1 current state, SCD2 history or a custom business projection. Source fidelity and target semantics are related, but they are not one combined strategy name.
 
-## 2.3 RAW APPEND does not imply full source fidelity
+## 7. Snowflake-native state ownership
 
-A watermark source can append every extraction observation and still only provide `current_state` fidelity.
-
-Likewise:
+When Snowflake already owns execution state, use it directly:
 
 ```text
-net_change append history != full change history
-snapshot history          != intermediate event history
+standard/append-only Stream
+  -> Snowflake owns offset
+
+Triggered Task
+  -> Snowflake owns task scheduling/run history
+
+Dynamic Table
+  -> Snowflake owns refresh scheduling/state
 ```
 
-The framework's separate `capture.archetype` and `capture.fidelity` fields are the correct boundary and should be retained.
+Do not mirror Stream offsets or every Task execution into a second custom checkpoint/run ledger.
 
-## 2.4 CDC time and business effective time are different
+`PLATFORM_CONTROL` remains appropriate for project/external executions whose authoritative state is not already owned by a Snowflake native primitive, and for landed-data processing/bootstrap/reset/config audit boundaries.
 
-`esf_scd2_event_history_select()` accepts an explicit `effective_at_column` plus deterministic `order_columns`, so project SQL can use a business-effective timestamp when that is the actual SCD contract.
+## 8. Bootstrap boundary
 
-However, v1 metadata does not label timestamps as:
+There are two different handoffs:
 
 ```text
-capture/change time
-business effective time
+SOURCE/INGESTION HANDOFF
+  consistent initial source snapshot + source CDC position
+  -> ingestion responsibility
+
+DOWNSTREAM LANDED-DATA HANDOFF
+  already-landed Bronze baseline + downstream processing position
+  -> Framework/PLATFORM_CONTROL may guard this
 ```
 
-That distinction therefore remains an explicit project/SCD design responsibility rather than something the framework should infer.
+The v2 raw contract deliberately removed connector bootstrap/checkpoint fields. The Framework cannot prove a SQL Server snapshot-to-LSN or Kafka cutover that occurred outside Snowflake; the ingestion implementation must establish and test that boundary.
 
-# 3. Orthogonal production concerns
+## 9. Recovery and reset
 
-The cheatsheet correctly treats these as requirements around the pattern rather than separate pattern rows.
+Recovery starts by identifying which evidence is authoritative.
 
-| Concern | Current status | Assessment |
-|---|---|---|
-| Safe initial load / snapshot-to-incremental handoff at position `P` | **GAP** | No reusable bootstrap/handoff contract or runbook yet guarantees snapshot baseline + change position without gap/double-apply. This should be added before a real CDC adapter is considered production-ready. |
-| At-least-once/redelivery idempotency | **READY / project-aware** | `idempotency_columns`, ordering metadata and SCD retry-safe behavior exist. Non-SCD event/current projections may still need explicit project/source dedupe SQL because event identity semantics differ by source. |
-| Source ordering | **READY** | `ordering_columns` and full-change validator requirements exist; SCD event history consumes deterministic order. |
-| Cursor != event identity | **READY** | Checkpoint and idempotency fields are separate. |
-| Physical delete with plain watermark | **SUPPORTED AS A LIMITATION** | Framework documentation must continue to state that plain watermark cannot make physical deletes authoritative without soft-delete rows, delete feed or periodic complete reconciliation. |
-| Soft-delete row vs delete event | **PARTIAL** | Semantic distinction is now documented, but v1 metadata does not have a dedicated soft-delete-row contract. |
-| Reliable business/entity key | **GAP FOR KEYLESS SOURCES** | `raw_contract.schema.json` requires at least one non-null `business_key`. Truly keyless snapshots/logs cannot be onboarded without inventing a key, which is prohibited. A future keyless-source design is required if such a source becomes a real consumer. |
-| Before/after image capability | **PARTIAL** | RAW columns can carry images, but v1 capture metadata does not state `after_only`, `before_and_after`, `delta_only`, etc. Generic SCD/current projection must not assume unavailable images. |
-| Business-effective SCD2 | **PARTIAL / BY DESIGN** | SCD macro supports explicit effective timestamp/order. The framework does not infer business-effective semantics from CDC/change time. |
-| Reconciliation | **PARTIAL** | Current reusable metrics cover row count, distinct business key and min/max source timestamp. PK presence diff, aggregate/hash bundles and periodic snapshot drift checks are not yet generic primitives. |
-| Schema evolution | **PARTIAL** | RAW contract has `breaking_change_policy`, but there is no automated contract-version diff or `EXPAND -> MIGRATE -> CONTRACT` workflow yet. |
-| Recovery / replay | **PARTIAL** | Architecture uses retained RAW evidence, Snowflake Time Travel/CLONE and deterministic downstream rebuild principles, but reusable backfill/replay/repair workflow templates are not implemented yet. |
-| Source retention vs recovery window | **PARTIAL** | RAW `retention_days` exists, but source-side CDC/tombstone/Kafka/API retention and the required enterprise recovery window are not yet a first-class validated contract. |
-| Runtime checkpoint/run/check authorization | **BLOCKER** | `PLATFORM_CONTROL` tables/procedures exist, but domain-scoped project runtime access is not safely implemented. See `OPERATIONAL_CONTROL_ACCESS.md`. |
-| External ingestion adapters | **NOT IMPLEMENTED YET** | Kafka Connector, direct Snowpipe Streaming, Openflow and real DB/API/file adapters remain intentionally deferred until the DEV control plane is proven. |
-| Live Snowflake behavior | **NOT PROVEN YET** | Static/source CI does not prove WIF, privileges, concurrency, performance, task/stream behavior or recovery in a real account. |
+If Bronze is valid but Silver/Gold state is wrong, generation-aware **processing reset** preserves Bronze and rebuilds downstream state.
 
-# 4. What should not be over-abstracted
-
-The audit does **not** justify turning every cheatsheet axis into another metadata field.
-
-Keep these explicit until repeated real consumers prove a reusable contract is necessary:
+Current reference reset contracts:
 
 ```text
-source extraction SQL/API calls
-business-event canonicalization
-business-effective-time rules
-source-specific before/after reconstruction
-source-specific bootstrap query/transaction mechanics
-source-specific schema migrations
+Transport SCD2
+  truncate SILVER_CANONICAL.VEHICLE_STATUS_HISTORY
+  truncate SILVER_CANONICAL.VEHICLE_STATUS_HISTORY__ESF_EVENTS
+  preserve BRONZE.VEHICLE_STATUS
+  rebuild from landed evidence
+
+Health SCD1
+  truncate SILVER_CANONICAL.PATIENT
+  preserve BRONZE.PATIENT
+  rebuild from landed evidence
 ```
 
-Likewise, do not add a `Bronze/Silver/Gold` physical schema taxonomy. The platform already has a stable RAW/downstream layer model.
+If Bronze itself is wrong or incomplete, use a separate ingestion-owned reland/source recovery procedure. Do not make a downstream reset silently delete source evidence.
 
-A future metadata field should be added only when it changes reusable technical behavior and can be validated consistently across domains.
+## 10. Current source/static coverage
 
-# 5. Near-term framework gaps revealed by this audit
-
-Before broad ingestion demos, the most valuable reusable additions are:
+Available source/static building blocks include:
 
 ```text
-1. domain-scoped PLATFORM_CONTROL operational access
-2. safe initial-load / position-P handoff pattern for incremental/CDC sources
-3. explicit soft-delete-row contract when a real watermark source needs it
-4. keyless-source contract only when a real source proves the need
-5. before/after/reconstructible-state capability if a real CDC source requires it
-6. contract-version compatibility + expand/migrate/contract guidance/tooling
-7. broader reconciliation primitives
-8. replay/backfill/recovery workflow templates
+schema-v2 project/dataset/raw validation
+offline dbt parse/materialization routing
+SCD1 current-state/tombstone primitive
+SCD2 replay/delete/reinsert/late-arrival behavior oracle
+SCD2 affected-key event-ledger implementation
+Dynamic Table Gold routing
+config snapshots
+domain-scoped operational/bootstrap/reset/config APIs
+generation-aware processing reset
+framework-free Health/Transport source-contract fixtures
+ordered Platform Control deployment bundle
 ```
 
-Items 3-5 should not be added speculatively as a large generic DSL. Implement the smallest contract required by an actual Health/Transport/source-adapter use case.
-
-# 6. Live acceptance gate for a pattern
-
-A pattern is not production-proven until DEV demonstrates:
+The following previously documented blockers are no longer source/static gaps:
 
 ```text
-source/bootstrap correctness
-checkpoint/cursor recovery
-retry/redelivery idempotency
-source ordering correctness
+domain-scoped PLATFORM_CONTROL API shape
+Framework generation/reset primitives
+domain processing-reset wrappers
+ordered control-plane deployment bundle
+raw contract v2 / orthogonal dataset strategy model
+```
+
+## 11. Intentional or remaining gaps
+
+Do not fill these speculatively. Add the smallest reusable contract only when a real source proves the need.
+
+```text
+truly keyless standard source contracts
+partial-update/before-after/delta reconstruction conventions
+broader automated schema compatibility/evolution tooling
+broader reconciliation/hash/drift bundles
+generic repair/backfill/replay workflow templates
+source-retention-vs-enterprise-recovery-window validation
+real external ingestion adapters/runtime
+```
+
+Source-specific implementations such as SQL Server CDC extraction, Kafka Connector setup, direct Snowpipe Streaming producers, Openflow, REST API pagination and file discovery are intentionally outside the downstream Framework.
+
+## 12. Live acceptance gate
+
+A pattern is not production-proven until DEV demonstrates the parts that matter for that source and target:
+
+```text
+source delivery / initial cutover correctness
+redelivery idempotency
+ordering correctness
 delete behavior
-reconciliation/drift detection
-schema-change behavior
-failure/replay recovery
-domain-isolated operational state
-cost/query-tag attribution
-least-privilege execution identity
+late-arrival behavior where relevant
+reconciliation/drift checks
+schema-change handling
+failure/replay/recovery
+least-privilege identity
+domain-isolated control state
+query-tag/cost attribution
+processing reset where applicable
 ```
 
-Only after those gates should the same immutable code revision be promoted through UAT and PROD.
+The platform-wide live gate is tracked by issue #6. Only after DEV is proven should the same immutable project SHA be promoted through UAT and PROD.
 
-## Related platform documents
+## 13. Reference implementations
 
-- `docs/CURRENT_CONTEXT.md`
+```text
+Health patient
+  full-change CDC evidence
+  -> readable latest-state SQL
+  -> load.strategy=scd1
+
+Transport vehicle_status
+  full-change CDC evidence
+  -> deterministic event SQL
+  -> load.strategy=scd2
+  -> history + current view
+
+Transport vehicle_position
+  append event evidence
+  -> load.strategy=append_only
+
+Transport depot_fleet_status
+  current Silver view
+  -> readable Gold aggregation SQL
+  -> Dynamic Table / snowflake_managed
+```
+
+These examples prove mixed strategies can coexist in one governed domain/database without encoding source acquisition technology into the target strategy name.
+
+## Related documents
+
 - `docs/PROJECT_BLUEPRINT.md`
+- `docs/CURRENT_CONTEXT.md`
 - `docs/architecture/OPERATIONAL_CONTROL_ACCESS.md`
-- `docs/architecture/RBAC_MODEL.md`
-- `docs/architecture/TERRAFORM_STATE_AND_IDENTITY.md`
-- `docs/adr/ADR-031-capture-archetypes-and-dynamic-table-fallback.md`
-- `docs/adr/ADR-035-capture-fidelity-and-scd-consumers.md`
-
-## Related framework documents
-
-- `enterprise-snowflake-data-project-framework/docs/patterns/capture-archetypes.md`
-- `enterprise-snowflake-data-project-framework/docs/patterns/source-capture-matrix.md`
-- `enterprise-snowflake-data-project-framework/docs/patterns/scd-consumers.md`
-- `enterprise-snowflake-data-project-framework/docs/patterns/snowflake-native-first.md`
+- `docs/architecture/DATASET_RESET_GENERATION.md`
+- `docs/architecture/BOOTSTRAP_HANDOFF_CONTROL.md`
+- Framework `docs/architecture/HYBRID_ARCHITECTURE_V2.md`
+- Framework `docs/patterns/snowflake-native-first.md`
