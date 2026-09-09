@@ -2,196 +2,198 @@
 
 ## Status
 
-**Accepted design; source/static implementation in progress as of 2026-08-29.**
+**Accepted v2 design; source/static implementation and DEV deployment wiring are complete. Live Snowflake authorization proof is still pending.**
 
-The accepted baseline is **domain-scoped read surfaces plus domain-fixed owner-rights write APIs** generated from environment project metadata.
+The baseline is **domain-scoped read surfaces plus domain-fixed owner-rights write APIs** generated from environment project metadata. The DEV Platform Control workflow now renders and deploys one ordered bundle containing base state, bootstrap, generation/reset, config snapshots and all generated domain access surfaces.
 
-The source renderer and static isolation checks now exist on the implementation branch. The existing DEV operational SQL deployment workflow has not yet been wired to execute the generated access SQL, and no real Snowflake account has verified the boundary. Do not describe runtime control-plane access as live/complete until the deployment wiring and live DEV denial tests succeed.
+Do not describe this boundary as live/production-proven until DEV WIF deployment and cross-domain denial tests actually succeed.
 
-## Current base objects
+## Shared platform-owned state
 
-Account-local operational state includes:
+Account-local control state includes:
 
 ```text
 PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECKPOINT
 PLATFORM_CONTROL.OPERATIONS.PIPELINE_RUN
 PLATFORM_CONTROL.OPERATIONS.PIPELINE_CHECK_RESULT
-PLATFORM_CONTROL.OPERATIONS.ADVANCE_PIPELINE_CHECKPOINT(...)
+PLATFORM_CONTROL.OPERATIONS.PIPELINE_BOOTSTRAP
+PLATFORM_CONTROL.OPERATIONS.DATASET_LIFECYCLE
+PLATFORM_CONTROL.OPERATIONS.DATASET_RESET
+
+PLATFORM_CONTROL.CONFIG.DATASET_CONFIG_SNAPSHOT
 ```
 
-The framework exposes primitives that can read/write these contracts, including:
-
-```text
-esf_checkpoint_read_sql()
-esf_checkpoint_advance_call_sql()
-esf_pipeline_run_start_sql()
-esf_pipeline_run_finish_sql()
-esf_record_check_result_sql()
-```
-
-The shared base tables and generic platform procedure remain platform-owned objects. Project runtime roles must not receive unrestricted access to them.
+These base tables are platform-owned. Project runtime/recovery roles do not receive unrestricted DML on them.
 
 ## Security requirement
 
 Within one Snowflake account:
 
 ```text
-HEALTH runtime
-  may read/write HEALTH operational state
-  must not read/write TRANSPORT operational state
+HEALTH runtime/recovery
+  may use HEALTH-scoped control surfaces
+  must not read/write/invoke TRANSPORT-scoped surfaces
 
-TRANSPORT runtime
-  may read/write TRANSPORT operational state
-  must not read/write HEALTH operational state
+TRANSPORT runtime/recovery
+  may use TRANSPORT-scoped control surfaces
+  must not read/write/invoke HEALTH-scoped surfaces
 ```
 
-The same property must hold for future domains such as FINANCE without hand-written source-specific logic.
+The same property must derive from metadata for future domains without copied domain-specific SQL.
 
-Platform operators may have broader governed access where required.
+## Domain-scoped read path
 
-## Why broad grants are unsafe
+For each configured project code, generated secure views expose only server-fixed domain/environment state. Current surfaces include the normal runtime views plus bootstrap/reset lifecycle views.
 
-The generic checkpoint advancement procedure is an owner-rights procedure and accepts `P_PROJECT_CODE` from the caller. Granting a project role USAGE on that procedure without an additional domain guard would allow the caller to request another project's code.
-
-Likewise, the existing run/check-result framework primitives can generate direct DML to a supplied relation and include `project_code` as data. Broad table DML would therefore make domain isolation depend on caller convention rather than enforcement.
-
-A row access policy alone is not sufficient for the write path: row access policies do not prevent rows from being inserted.
-
-For owner-rights procedures, do not assume `INVOKER_ROLE()` can safely recover the external project role. The accepted design avoids that dependency entirely.
-
-## Accepted design
-
-### Read path
-
-For each configured project code, generate secure views over the shared base tables:
+Examples:
 
 ```text
-<DOMAIN>_PIPELINE_CHECKPOINT
-<DOMAIN>_PIPELINE_RUN
-<DOMAIN>_PIPELINE_CHECK_RESULT
+HEALTH_PIPELINE_CHECKPOINT
+HEALTH_PIPELINE_RUN
+HEALTH_PIPELINE_CHECK_RESULT
+HEALTH_PIPELINE_BOOTSTRAP
+HEALTH_DATASET_LIFECYCLE
+HEALTH_DATASET_RESET
+
+TRANSPORT_...
 ```
 
-Each view contains a server-fixed predicate:
+The predicate is fixed inside the generated object; callers do not supply `PROJECT_CODE` or `ENVIRONMENT` to select another domain.
 
-```sql
-WHERE PROJECT_CODE = '<DOMAIN>'
-```
+## Domain-scoped write path
 
-`AR_<DOMAIN>_DEPLOY` receives `SELECT` only on its three domain views, plus the required database/schema `USAGE` privileges.
-
-It receives no `SELECT`, `INSERT`, `UPDATE`, `DELETE`, `TRUNCATE` or `REFERENCES` privilege on the shared operational base tables.
-
-### Write path
-
-For each configured domain, generate owner-rights procedures whose project and environment are fixed in the procedure body rather than accepted from the caller:
+Generated owner-rights procedures fix project and environment in the procedure body. Current families include:
 
 ```text
 <DOMAIN>_ADVANCE_PIPELINE_CHECKPOINT(...)
 <DOMAIN>_PIPELINE_RUN_START(...)
 <DOMAIN>_PIPELINE_RUN_FINISH(...)
 <DOMAIN>_RECORD_PIPELINE_CHECK_RESULT(...)
+
+<DOMAIN>_PIPELINE_BOOTSTRAP_START(...)
+<DOMAIN>_PIPELINE_BOOTSTRAP_MARK_SNAPSHOT_LANDED(...)
+<DOMAIN>_PIPELINE_BOOTSTRAP_MARK_VALIDATED(...)
+<DOMAIN>_PIPELINE_BOOTSTRAP_COMMIT_HANDOFF(...)
+
+<DOMAIN>_DATASET_RESET_START(...)
+<DOMAIN>_DATASET_RESET_COMPLETE(...)
+
+<DOMAIN>_REGISTER_DATASET_CONFIG_SNAPSHOT(...)
 ```
 
 Important enforcement properties:
 
-- there is no caller-controlled `P_PROJECT_CODE` parameter;
-- there is no caller-controlled `P_ENVIRONMENT` parameter;
-- checkpoint MERGE keys always include the fixed domain;
-- run-start MERGE matching includes fixed domain and environment, so one project cannot update another project's same-named run;
-- run-finish UPDATE includes fixed domain and environment predicates;
-- check-result INSERT always writes fixed domain and environment values;
-- the project role receives `USAGE` only on its own generated procedures.
+- no caller-controlled `P_PROJECT_CODE`;
+- no caller-controlled `P_ENVIRONMENT`;
+- runtime/reset/config operations are matched to server-fixed domain/environment;
+- project roles receive only their own generated views/procedures;
+- shared base-table mutation remains platform-owned;
+- recovery uses a separate `AR_<DOMAIN>_RECOVERY` capability rather than ordinary developer/deploy privilege.
 
-The generic base procedure may remain available to governed platform operators, but project deploy roles must not be granted it.
+## Metadata-driven generation
 
-### Metadata-driven generation
-
-The authoritative project list remains:
+The authoritative project list is:
 
 ```text
 config/environments/<env>.yml -> projects
 ```
 
-`snowflake/control/operations/render_domain_access.py` reads that metadata and deterministically renders all domain views, write APIs and grants for DEV/UAT/PROD.
+Renderers derive the domain surfaces for DEV/UAT/PROD:
 
-Adding a new domain therefore requires project metadata and normal RBAC/project identity configuration; it does not require copied Health/Transport SQL.
+```text
+render_domain_access.py
+render_domain_bootstrap_access.py
+render_domain_reset_access.py
+render_domain_config_access.py
+```
 
-The renderer rejects project codes that are not safe unquoted Snowflake identifiers.
+`render_deployment_bundle.py` combines those generated surfaces with the ordered base SQL files into one deterministic deployment artifact. Missing base files or invalid project/environment identifiers fail closed.
+
+## DEV deployment contract
+
+`.github/workflows/platform-control-sql-deploy-dev.yml` now:
+
+```text
+validate protected DEV environment configuration
+-> install pinned renderer dependency + Snowflake CLI
+-> render config/environments/dev.yml into one PLATFORM_CONTROL bundle
+-> statically assert every control family is present
+-> request account-scoped GitHub OIDC token
+-> verify Snowflake WIF identity
+-> execute the complete bundle
+-> verify base/config/domain views and procedures
+```
+
+The workflow no longer manually executes only the original checkpoint/run/check SQL subset.
+
+Source/static CI contains a workflow-contract test so this wiring cannot silently regress to partial deployment.
 
 ## Ownership boundary
 
-Ownership remains intentionally split:
-
 ```text
 Terraform
-  PLATFORM_CONTROL database
-  managed schemas
-  stable roles / workload identities / warehouses
+  PLATFORM_CONTROL database/schemas
+  stable roles, workload identities and warehouses
 
 platform-infra native SQL
-  operational base tables
-  generic platform procedure
-  generated domain read/write access surfaces
+  shared control tables
+  generated domain-scoped views/procedures
+  ordered deployment bundle
 
-framework
-  reusable SQL/dbt helpers that target the approved project operational contract
+Framework
+  reusable SQL/dbt helpers that call the approved domain-scoped contract
 
-project repos
-  domain metadata, datasets and business logic
+Domain repos
+  dataset/source contracts, readable SQL and explicit recovery plans
 ```
 
-Do not manage the same database object in both Terraform and native SQL.
+One database object has one lifecycle owner; Terraform and native SQL must not fight over the same object.
 
 ## Static verification
 
-`Platform Control SQL CI` verifies at least:
+`Platform Control SQL CI` proves the intended source shape, including:
 
-```text
-renderer unit tests pass
-DEV/UAT/PROD metadata all render successfully
-no shared operational-table project DML grant is generated
-project/environment are not exposed as caller-controlled write-API parameters
-finish updates are project/environment constrained
-invalid project identifiers are rejected
-```
+- renderer unit tests;
+- DEV/UAT/PROD bundle rendering;
+- dependency order;
+- generated runtime/bootstrap/reset/config surfaces;
+- no direct shared-table domain DML grants;
+- project/environment are server-fixed in write APIs;
+- bootstrap transaction/generation guards;
+- reset generation/retry guards;
+- config snapshot conflict safety;
+- DEV deployment workflow consumes the complete bundle.
 
-Static rendering proves the intended SQL shape. It does not prove Snowflake authorization semantics or successful live deployment.
+Static rendering does **not** prove Snowflake authorization, owner-rights behavior or live grants.
 
 ## Explicit non-solutions
 
-Do not adopt these shortcuts:
+Do not adopt:
 
 ```text
-grant every AR_<DOMAIN>_DEPLOY unrestricted DML on PLATFORM_CONTROL.OPERATIONS
-trust caller-supplied project_code without server-side enforcement
-use row access policy alone as insert authorization
-reuse human ADMIN as the routine runtime principal
-infer the external project role from owner-rights procedure role functions
-create one-off Health/Transport logic that cannot derive for future domains
+unrestricted project-role DML on PLATFORM_CONTROL base tables
+caller-supplied project/environment authorization
+row-access policy alone for write authorization
+human ADMIN as routine runtime identity
+one-off Health/Transport control SQL
+Framework-owned connector LSN/Kafka/API cursor state
 ```
 
-## Remaining integration work
+## Remaining live DEV verification gate
 
-Before this boundary can be called source-complete, the protected operational SQL deployment workflow must render the selected environment configuration and execute the generated SQL after the shared base objects are deployed.
-
-The framework runtime helpers must then use the domain-scoped read/write contract rather than assuming project DML on shared base relations.
-
-## Live DEV verification gate
-
-Before project runtime control state is considered complete, live DEV must prove at least:
+Live DEV must still prove:
 
 ```text
-HEALTH can read/write its own checkpoint/run/check state
-TRANSPORT can read/write its own checkpoint/run/check state
-HEALTH cannot see TRANSPORT rows through its read surfaces
-TRANSPORT cannot see HEALTH rows through its read surfaces
-HEALTH cannot invoke TRANSPORT write procedures
-TRANSPORT cannot invoke HEALTH write procedures
-project roles have no direct DML on shared operational tables
-project roles cannot invoke the generic project_code-accepting checkpoint procedure
+complete bundle deploys successfully
+HEALTH reads/writes only HEALTH control state
+TRANSPORT reads/writes only TRANSPORT control state
+cross-domain views/procedures are unavailable
+project roles have no direct base-table DML
+recovery roles can reset only their own domain
+bootstrap/reset retry and generation behavior works in Snowflake
+checkpoint advancement and target processing compose correctly
+config snapshot registration is conflict-safe
 platform operator access works as designed
-retry/idempotency semantics remain correct
-checkpoint advancement still composes with target-DML transaction requirements
 ```
 
-Until then, the source/static implementation is a security design baseline, not proof of end-to-end project operational-state authorization.
+This live evidence is tracked by platform issue #6. Until it passes, the source/static implementation is complete but runtime authorization remains unproven.

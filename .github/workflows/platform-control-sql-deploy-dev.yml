@@ -13,7 +13,7 @@ concurrency:
 
 jobs:
   deploy:
-    name: deploy PLATFORM_CONTROL operational SQL to DEV
+    name: deploy complete PLATFORM_CONTROL v2 bundle to DEV
     runs-on: ubuntu-latest
     environment: dev
 
@@ -24,6 +24,7 @@ jobs:
       SNOWFLAKE_AUTHENTICATOR: WORKLOAD_IDENTITY
       SNOWFLAKE_WORKLOAD_IDENTITY_PROVIDER: OIDC
       SNOWFLAKE_ENHANCED_EXIT_CODES: "1"
+      PLATFORM_CONTROL_BUNDLE: /tmp/platform-control-dev.sql
 
     steps:
       - name: Checkout
@@ -36,6 +37,15 @@ jobs:
         with:
           python-version: "3.13"
           cache: pip
+          cache-dependency-path: snowflake/control/operations/requirements.txt
+
+      - name: Install control renderer and Snowflake CLI
+        shell: bash
+        run: |
+          set -euo pipefail
+          python -m pip install -r snowflake/control/operations/requirements.txt
+          python -m pip install "snowflake-cli==3.23.0"
+          snow --version
 
       - name: Verify required environment configuration
         shell: bash
@@ -50,6 +60,33 @@ jobs:
               exit 1
             fi
           done
+          if [[ "${SNOWFLAKE_OIDC_AUDIENCE}" == "snowflakecomputing.com" ]]; then
+            echo "Use an account-scoped Snowflake OIDC audience, not snowflakecomputing.com." >&2
+            exit 1
+          fi
+
+      - name: Render complete DEV PLATFORM_CONTROL bundle
+        shell: bash
+        run: |
+          set -euo pipefail
+          python snowflake/control/operations/render_deployment_bundle.py \
+            --config config/environments/dev.yml \
+            --output "${PLATFORM_CONTROL_BUNDLE}"
+
+          # Fail closed if a future renderer change silently drops a control family.
+          grep -Fq -- '-- BEGIN BASE: pipeline_checkpoint.sql' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq -- '-- BEGIN BASE: pipeline_bootstrap.sql' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq -- '-- BEGIN BASE: dataset_lifecycle.sql' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq -- '-- BEGIN BASE: dataset_reset.sql' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq -- '-- BEGIN BASE: dataset_config_snapshot.sql' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq -- '-- BEGIN GENERATED: normal domain operational access' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq -- '-- BEGIN GENERATED: bootstrap handoff access' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq -- '-- BEGIN GENERATED: dataset reset access' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq -- '-- BEGIN GENERATED: dataset config snapshot access' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq 'HEALTH_DATASET_RESET_START' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq 'TRANSPORT_DATASET_RESET_START' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq 'HEALTH_REGISTER_DATASET_CONFIG_SNAPSHOT' "${PLATFORM_CONTROL_BUNDLE}"
+          grep -Fq 'TRANSPORT_REGISTER_DATASET_CONFIG_SNAPSHOT' "${PLATFORM_CONTROL_BUNDLE}"
 
       - name: Resolve DEV platform identity and request Snowflake OIDC token
         shell: bash
@@ -85,12 +122,6 @@ jobs:
           echo "SNOWFLAKE_ROLE=${snowflake_role}" >> "${GITHUB_ENV}"
           echo "SNOWFLAKE_ACCOUNT=${SNOWFLAKE_ORGANIZATION_NAME}-${SNOWFLAKE_ACCOUNT_NAME}" >> "${GITHUB_ENV}"
 
-      - name: Install pinned Snowflake CLI
-        shell: bash
-        run: |
-          python -m pip install "snowflake-cli==3.23.0"
-          snow --version
-
       - name: Verify Snowflake workload identity
         shell: bash
         run: |
@@ -107,7 +138,7 @@ jobs:
             --enhanced-exit-codes \
             -q 'select current_organization_name(), current_account_name(), current_user(), current_role()'
 
-      - name: Deploy PLATFORM_CONTROL operational SQL
+      - name: Deploy complete PLATFORM_CONTROL bundle
         shell: bash
         run: |
           set -euo pipefail
@@ -121,12 +152,9 @@ jobs:
             --enable-templating NONE \
             --local-only \
             --enhanced-exit-codes \
-            -f snowflake/control/operations/pipeline_checkpoint.sql \
-            -f snowflake/control/operations/pipeline_run.sql \
-            -f snowflake/control/operations/pipeline_check_result.sql \
-            -f snowflake/control/operations/advance_pipeline_checkpoint.sql
+            -f "${PLATFORM_CONTROL_BUNDLE}"
 
-      - name: Verify operational objects
+      - name: Verify complete control-plane surfaces
         shell: bash
         run: |
           set -euo pipefail
@@ -140,4 +168,18 @@ jobs:
             --enable-templating NONE \
             --local-only \
             --enhanced-exit-codes \
-            -q "select table_name from PLATFORM_CONTROL.INFORMATION_SCHEMA.TABLES where table_schema = 'OPERATIONS' and table_name in ('PIPELINE_CHECKPOINT','PIPELINE_RUN','PIPELINE_CHECK_RESULT') order by table_name; show procedures like 'ADVANCE_PIPELINE_CHECKPOINT' in schema PLATFORM_CONTROL.OPERATIONS;"
+            -q "
+              select table_schema, table_name
+              from PLATFORM_CONTROL.INFORMATION_SCHEMA.TABLES
+              where (table_schema = 'OPERATIONS' and table_name in (
+                'PIPELINE_CHECKPOINT','PIPELINE_RUN','PIPELINE_CHECK_RESULT',
+                'PIPELINE_BOOTSTRAP','DATASET_LIFECYCLE','DATASET_RESET'
+              )) or (table_schema = 'CONFIG' and table_name = 'DATASET_CONFIG_SNAPSHOT')
+              order by table_schema, table_name;
+              show views like 'HEALTH_%' in schema PLATFORM_CONTROL.OPERATIONS;
+              show views like 'TRANSPORT_%' in schema PLATFORM_CONTROL.OPERATIONS;
+              show procedures like 'HEALTH_%' in schema PLATFORM_CONTROL.OPERATIONS;
+              show procedures like 'TRANSPORT_%' in schema PLATFORM_CONTROL.OPERATIONS;
+              show procedures like 'HEALTH_%' in schema PLATFORM_CONTROL.CONFIG;
+              show procedures like 'TRANSPORT_%' in schema PLATFORM_CONTROL.CONFIG;
+            "
